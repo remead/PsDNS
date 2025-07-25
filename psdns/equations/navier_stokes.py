@@ -581,6 +581,72 @@ class Boussinesq(RotationalNavierStokes):
         return z
 
 
+    def phys_space_IC(self, grid, kmin, kmax, spectrum, profile=scipy.special.erf, seed=123):
+        if seed == None:
+            warnings.warn(
+                "A seed of None for Boussinesq.band() will result "
+                "in inconsistent initialization across MPI ranks."
+                )
+        # Check kmax fits on the grid!
+        x = grid.x[:2,:,:,0]
+        z = numpy.zeros(shape=x[0].shape)
+
+        # Since the loop will execute identically on all ranks, rng will
+        # generate the same random numbers.
+        rng = numpy.random.default_rng(seed)
+
+        # Generates the wavenumbers in x and y
+        n = numpy.arange(kmax+1).reshape(kmax+1, 1) #  n = numpy.arange(kmax).reshape(kmax, 1)
+        m = numpy.arange(kmax+1).reshape(1, kmax+1) #  m = numpy.arange(kmax).reshape(1, kmax)
+
+        # Generates the overall wavenumber
+        k = numpy.sqrt(n**2 + m**2)
+
+        # Only get the wavenumbers allowed and their corresponding x, y wavenumbers
+        mask = (k >= kmin)&(k <= kmax)
+        k_allow = k[mask]
+        n_ind, m_ind = numpy.where(mask)
+        n_val = n[n_ind].reshape(n_ind.size)
+        m_val = m.reshape(kmax+1, 1)[m_ind].reshape(n_ind.size) # m_val = m.reshape(kmax, 1)[m_ind].reshape(n_ind.size)
+
+        # Get the amplitude based on the spectrum
+        amps = spectrum(k_allow, kmin, kmax)
+        amps = amps[:, None, None]
+        n_scaled = n_val[:, None, None] * x[0]
+        m_scaled = m_val[:, None, None] * x[1]
+
+        # Combine to get the perturbation in physical space
+        z = numpy.sum(amps*numpy.cos(2*numpy.pi*(n_scaled/grid.box_size[0]+rng.random(n_scaled.shape)))
+                    *numpy.cos(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape))), axis = 0)
+        """z = numpy.sum(amps*numpy.cos(2*numpy.pi*(n_scaled/grid.box_size[0]+rng.random(n_scaled.shape)))
+                    *numpy.cos(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape)))
+                    + amps*numpy.cos(2*numpy.pi*(n_scaled/grid.box_size[0]+rng.random(n_scaled.shape)))
+                    *numpy.sin(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape)))
+                    + amps*numpy.sin(2*numpy.pi*(n_scaled/grid.box_size[0]+rng.random(n_scaled.shape)))
+                    *numpy.cos(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape)))
+                    + amps*numpy.sin(2*numpy.pi*(n_scaled/grid.box_size[0]+rng.random(n_scaled.shape)))
+                    *numpy.sin(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape))), axis = 0)"""
+        return z
+
+
+'''def rogallo_RTI(self, grid, kmin, kmax, delta1, delta2, spectrum, energy=energy_RTI):
+        u = SpectralArray(grid, (4,))
+        k = u.grid.k
+        x = u.grid.x
+        print(k[0, 1])
+        print(x[0, 1])
+        print(x.shape)
+        exit()
+        kmag = numpy.sqrt(k[0]**2 + k[1]**2)
+        f = spectrum(kmag, kmin, kmax)
+        eta_hat = numpy.exp(1j*theta) * f / (2 * numpy.pi * kmag)
+        
+        exit()
+        kx = k[0, :, :, :]
+        ky = k[1, :, :, :]
+        return u'''
+
+        
 class SimplifiedSmagorinsky(NavierStokes):
     r"""A simplified Smagorinsky-type model.
 
