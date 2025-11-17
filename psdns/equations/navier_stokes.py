@@ -437,7 +437,9 @@ class RotationalNavierStokes(NavierStokes):
         """
         vorticity = uhat[:3].curl().to_physical()
         nl = - numpy.cross(u, vorticity, axis=0)
+        nl_temp = PhysicalArray(uhat.grid, nl)
         nl = PhysicalArray(uhat.grid, nl).to_spectral()
+        nl_temp2 = nl.to_physical()
         return nl
 
     def pressure(self, uhat):
@@ -580,8 +582,203 @@ class Boussinesq(RotationalNavierStokes):
                         )
         return z
 
+    
+    def band_amps(self, grid, kmin, kmax, spectrum, scale, seed=123):
+        if seed == None:
+            warnings.warn(
+                "A seed of None for Boussinesq.band() will result "
+                "in inconsistent initialization across MPI ranks."
+                )
+        # Check kmax fits on the grid!
+        x = grid.x[:2,:,:,0]
+        z = numpy.zeros(shape=x[0].shape)
+        # Since the loop will execute identically on all ranks, rng will
+        # generate the same random numbers.
+        rng = numpy.random.default_rng(seed)
+        #x_rand = numpy.zeros([kmax])
+        #y_rand = numpy.zeros([kmax])
+        #for start_pos in range(scale):
+        #    for index in range(start_pos,kmax,scale):
+        #        x_rand[index] = rng.random()
+        #        y_rand[index] = rng.random()
 
-    def phys_space_IC(self, grid, kmin, kmax, spectrum, profile=scipy.special.erf, seed=123):
+        #print(x_rand)
+        #print(y_rand)
+        tot_amp = 0
+        #print(x[0] + rng.random()*2*numpy.pi - x[0])
+        for n in range(kmax+1):
+            for m in range(kmax+1):
+                #n=n-n%scale
+                #m=m-m%scale
+                k = numpy.sqrt((n/scale)**2 + (m/scale)**2)
+                #print("n=" + str(n) + "  m=" + str(m) + "  k=" + str(k))
+                if k >= kmin/scale and k <= kmax/scale:
+                    #z += (spectrum(k, kmin/scale, kmax/scale) *numpy.cos(2*numpy.pi*(n*x[0]/grid.box_size[0]/scale))#+rng.random()))
+                    #    *numpy.cos(2*numpy.pi*(m*x[1]/grid.box_size[1]/scale)))#+rng.random()))
+                    '''z += (
+                        spectrum(k, kmin/scale, kmax/scale) * 
+                        #numpy.sqrt((2*numpy.pi/grid.box_size[0])**2 + (2*numpy.pi/grid.box_size[1])**2) * 
+                        (2*numpy.pi/grid.box_size[0] * 2*numpy.pi/grid.box_size[1]) *
+                        numpy.cos(2*numpy.pi*(n*x[0]/grid.box_size[0]))#+rng.random()))
+                        *numpy.cos(2*numpy.pi*(m*x[1]/grid.box_size[1]))#+rng.random()))
+                        )'''
+                    #randx = x_rand[n] #0#rng.random()
+                    #randy = y_rand[m] #0#rng.random()
+
+                    z += (
+                        spectrum(k, kmin/scale, kmax/scale) * 
+                        (2*numpy.pi/grid.box_size[0] * 2*numpy.pi/grid.box_size[1]) * 
+                        ( numpy.cos(2*numpy.pi * (n * x[0]/grid.box_size[0])) #+ rng.random()))#randx))
+                        * numpy.cos(2*numpy.pi * (m * x[1]/grid.box_size[1])) #+ rng.random()))#randy))
+                        #+ numpy.sin(2*numpy.pi * (n * x[0]/grid.box_size[0] ))#+ randx))
+                        #* numpy.sin(2*numpy.pi * (m * x[1]/grid.box_size[1] ))#+ randy))
+                        #+ numpy.cos(2*numpy.pi * (n * x[0]/grid.box_size[0] ))#+ randx))
+                        #* numpy.sin(2*numpy.pi * (m * x[1]/grid.box_size[1] ))#+ randy))
+                        #+ numpy.sin(2*numpy.pi * (n * x[0]/grid.box_size[0] ))#+ randx))
+                        #* numpy.cos(2*numpy.pi * (m * x[1]/grid.box_size[1] ))#+ randy))
+                        ))
+                    tot_amp += spectrum(k, kmin/scale, kmax/scale)*(2*numpy.pi/grid.box_size[0] * 2*numpy.pi/grid.box_size[1])
+        #rms = numpy.sqrt(numpy.mean(z**2))
+        #print(rms)
+        #z*=0.001/rms*(2*numpy.pi/grid.box_size[0] * 2*numpy.pi/grid.box_size[1])
+        #print(numpy.sqrt(numpy.mean(z**2)))
+        #print(z)
+        #print(x[0])
+        #print(tot_amp)
+        #exit()
+        z_hat = numpy.fft.fft2(z, norm="forward")
+        #print(numpy.sum((z_hat*z_hat.conjugate()).real))
+        #print(numpy.sum(z*z)/numpy.prod(z.shape))
+        #exit()
+        return z
+
+
+    def band_amps_wave(self, grid, kmin, kmax, spectrum, scale, seed=123):
+        if seed == None:
+            warnings.warn(
+                "A seed of None for Boussinesq.band() will result "
+                "in inconsistent initialization across MPI ranks."
+                )
+        # Check kmax fits on the grid!
+        x = grid.x[:2,:,:,0]
+        #print(grid.x.shape)
+        #print(x.shape)
+        #exit()
+        z = numpy.zeros(shape=x[0].shape)
+        # Since the loop will execute identically on all ranks, rng will
+        # generate the same random numbers.
+        M = grid.pdims
+        kx = numpy.array([*range(0, int(M[0])//2+1), *range(-((int(M[0])-1)//2), 0)])/scale
+        ky = numpy.array([*range(0, int(M[1])//2+1), *range(-((int(M[1])-1)//2), 0)])/scale
+        kmag = numpy.sqrt(kx[:, numpy.newaxis]**2 + ky[numpy.newaxis, :]**2)
+        rng = numpy.random.default_rng(seed)
+        A=spectrum(kmag, kmin, kmax) * numpy.sqrt((2*numpy.pi)**2 / (grid.box_size[0] * grid.box_size[1]))
+        A[numpy.isnan(A)] = 0
+
+        randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+        s = A * numpy.exp(1j*randmat)
+        for i in range(M[0]):
+            for j in range(M[1]):
+                ii = (-i) % M[0]
+                jj = (-j) % M[1]
+                s[ii, jj] = numpy.conj(s[i, j])
+
+        s[grid.sdims[0]//2+1:-(grid.sdims[0]-1)//2, :] = 0
+        s[:, grid.sdims[1]//2+1:-(grid.sdims[1]-1)//2] = 0
+
+        z = numpy.fft.ifft2(s, norm="forward").real
+        #print(s)
+        #print(numpy.sum(s*s.conjugate()).real)
+        #print(numpy.sum(z**2)/numpy.prod(z.shape))
+        #exit()
+        return z
+    
+    def band_amps_wave_par(self, grid, kmin, kmax, spectrum, scale, seed=123):
+        if seed == None:
+            warnings.warn(
+                "A seed of None for Boussinesq.band() will result "
+                "in inconsistent initialization across MPI ranks."
+                )
+        print(grid.x.shape)
+        exit()
+        if grid.comm.rank ==0:
+            print(grid.k2Dxy.shape)
+            exit()
+        kmag = numpy.sqrt(numpy.sum((grid.k[:2,:,:,0]/(grid.dk[:2, None, None]*scale))**2, axis=0))
+        exit()
+        A=spectrum(kmag, kmin, kmax) * numpy.sqrt((2*numpy.pi)**2 / (grid.box_size[0] * grid.box_size[1]))
+        A[numpy.isnan(A)] = 0
+        rng = numpy.random.default_rng(seed)
+        randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+        s = A * numpy.exp(1j*randmat)
+        print(s)
+        exit()
+
+        """# Check kmax fits on the grid!
+        N = grid.sdims
+        M = grid.pdims
+        s = numpy.zeros(2, M[0], M[1],
+               grid._local_kx_slice.stop - grid._local_kx_slice.start, 
+               grid._local_ky_slice.stop - grid._local_ky_slice.start,
+               dtype=complex)
+        if self.grid._aliasing_strategy == 'mpi4py' and (N[0]%2==0 or N[1]%2==0):
+            exit()
+        z = numpy.ascontiguousarray(numpy.fft.ifft2(s, axis=(-4, -3), norm='forward'))
+        print(z.shape)
+        exit()"""
+        return z
+
+
+    def band_amps_wave_par_perturbed_interface(self, grid, kmin, kmax, spectrum, scale, delta1, delta2, profile=scipy.special.erf, seed=123):
+        # Random numbers generated transpose to what is done in the serial version ==> Different results will be obtained
+        u = PhysicalArray(grid, (4,))
+        s_2d = u.to_spectral_2Dxy()
+        kmag = numpy.sqrt(numpy.sum((grid.k[:2,:,:,0]/(grid.dk[:2, None, None]*scale))**2, axis=0))
+        A=spectrum(kmag, kmin, kmax) * numpy.sqrt((2*numpy.pi)**2 / (grid.box_size[0] * grid.box_size[1]))
+        A[numpy.isnan(A)] = 0
+    
+        rng = numpy.random.default_rng(seed)
+        #randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+        for r in range(grid.comm.size):
+            if grid.comm.rank == r:
+                if r == 0:
+                    rng = numpy.random.default_rng(seed)
+                else:
+                    state = grid.comm.recv(source=r-1, tag=77)
+                    rng = numpy.random.default_rng()
+                    rng.bit_generator.state = state
+                if grid._local_z_slice.start == 0:
+                    #randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+                    randmat = rng.uniform(0, 2*numpy.pi, numpy.prod(A.shape)).reshape((A.shape[1], A.shape[0])).T
+                else:
+                    randmat = numpy.zeros(A.shape)
+                if r < grid.comm.size - 1:
+                    state = rng.bit_generator.state
+                    grid.comm.send(state, dest=r+1, tag=77)
+        
+        s_2d[3,:,:,0] = A * numpy.exp(1j*randmat)
+        s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) | (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) | 
+                        (grid.k[1,:,:,0]==grid.pdims[0]/2))] = s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) | 
+                        (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) | 
+                        (grid.k[1,:,:,0]==grid.pdims[0]/2))].real
+        
+        u = s_2d.to_physical()
+        z = u[3,:,:,0]
+        
+        x = u.grid.x
+        x1 = u.grid.box_size[2]/2
+        x2 = u.grid.box_size[2]
+        u[3] = (
+            profile((x[2] - x1 - z[:,:,numpy.newaxis])/delta1)
+            - profile(x[2]/delta2)
+            - profile((x[2] - x2)/delta2)
+            )
+        s = u.to_spectral()
+        s._data = numpy.ascontiguousarray(s._data)
+        return s
+
+
+    def phys_space_IC(self, grid, kmin, kmax, spectrum, h_rms, profile=scipy.special.erf, seed=123):
         if seed == None:
             warnings.warn(
                 "A seed of None for Boussinesq.band() will result "
@@ -596,8 +793,8 @@ class Boussinesq(RotationalNavierStokes):
         rng = numpy.random.default_rng(seed)
 
         # Generates the wavenumbers in x and y
-        n = numpy.arange(kmax+1).reshape(kmax+1, 1) #  n = numpy.arange(kmax).reshape(kmax, 1)
-        m = numpy.arange(kmax+1).reshape(1, kmax+1) #  m = numpy.arange(kmax).reshape(1, kmax)
+        n = numpy.arange(kmax).reshape(kmax, 1) #  n = numpy.arange(kmax).reshape(kmax, 1)
+        m = numpy.arange(kmax).reshape(1, kmax) #  m = numpy.arange(kmax).reshape(1, kmax)
 
         # Generates the overall wavenumber
         k = numpy.sqrt(n**2 + m**2)
@@ -607,7 +804,7 @@ class Boussinesq(RotationalNavierStokes):
         k_allow = k[mask]
         n_ind, m_ind = numpy.where(mask)
         n_val = n[n_ind].reshape(n_ind.size)
-        m_val = m.reshape(kmax+1, 1)[m_ind].reshape(n_ind.size) # m_val = m.reshape(kmax, 1)[m_ind].reshape(n_ind.size)
+        m_val = m.reshape(kmax, 1)[m_ind].reshape(n_ind.size) # m_val = m.reshape(kmax, 1)[m_ind].reshape(n_ind.size)
 
         # Get the amplitude based on the spectrum
         amps = spectrum(k_allow, kmin, kmax)
@@ -626,6 +823,8 @@ class Boussinesq(RotationalNavierStokes):
                     *numpy.cos(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape)))
                     + amps*numpy.sin(2*numpy.pi*(n_scaled/grid.box_size[0]+rng.random(n_scaled.shape)))
                     *numpy.sin(2*numpy.pi*(m_scaled/grid.box_size[1]+rng.random(n_scaled.shape))), axis = 0)"""
+        rms = numpy.sqrt(numpy.mean(z**2))
+        z*=h_rms/rms
         return z
 
 
