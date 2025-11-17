@@ -818,16 +818,29 @@ class VTKDump_Parallel(Diagnostic):
         else:
             u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
             print("All by myself, don't communicate")
-        sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
         
-        exit()
+        sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
+        getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
+        if sendy2 != r:
+            y_crossover = numpy.empty_like(u[:, :, 0:1, :])
+            y_crossover = numpy.ascontiguousarray(y_crossover)
+            y_send = u[:, :, 0:1, :]
+            y_send = numpy.ascontiguousarray(y_send)
+            uhat.grid.comm.Sendrecv(y_send, dest=sendy2, recvbuf=y_crossover, source=getyfrom)
+            u = numpy.concatenate((u, y_crossover), axis=2)
+            print("Complete in y")
+        else:
+            u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
+            print("All by myself, don't communicate in y")
+
+        u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
         """if sendx2 != r:
             print(f"Rank {uhat.grid.comm.rank} sending x to {sendx2} with tag {r}")
             uhat.grid.comm.send(u[:, 0:1, :, :], dest=sendx2, tag=r)
             print("After send")
             exit()"""
         
-        # Receive from rank to right
+        """# Receive from rank to right
         getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
         if getxfrom != r:
             print(f"Rank {uhat.grid.comm.rank} receiving x from {getxfrom} with tag {(r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]}")
@@ -854,7 +867,7 @@ class VTKDump_Parallel(Diagnostic):
             u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
             
 
-        u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
+        u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)"""
         #print("I am grid aware")
         
         coord = uhat.grid.x
@@ -892,11 +905,12 @@ class VTKDump_Parallel(Diagnostic):
                 break'''
         grid = grid.compute_connectivity()
         for i in range(len(self.names)):
-            if i<len(corner_values[0,:]):
+            grid.point_data[self.names[i]] = corner_values[:, i]
+            """if i<len(corner_values[0,:]):
                 grid.point_data[self.names[i]] = corner_values[:, i]
             else:
                 print("UHOH")
-                break
+                break"""
         #grid.plot(show_edges=True)
         filename=self.filename.format(rank=uhat.grid.comm.rank, time=time)
         grid.save(filename+".vtu")
