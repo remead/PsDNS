@@ -797,9 +797,13 @@ class VTKDump_Parallel(Diagnostic):
         self.names = names
 
     def diagnostic(self, time, equations, uhat):
-        import pyvista as pv
+        from pyevtk.hl import gridToVTK, writeParallelVTKGrid
+
         u = numpy.asarray(uhat.to_physical())
-        print("Gaining Grid Awareness")
+        #print(uhat.grid.x[:,:,0])
+        """numpy.set_printoptions(threshold=sys.maxsize)
+        print(u[3, :,:,64])
+        exit()"""
         # Grid awareness
         x_ind = uhat.grid.comm.rank % uhat.grid.decomp[0]
         y_ind = int(uhat.grid.comm.rank / uhat.grid.decomp[0])
@@ -814,10 +818,8 @@ class VTKDump_Parallel(Diagnostic):
             x_send = numpy.ascontiguousarray(x_send)
             uhat.grid.comm.Sendrecv(x_send, dest=sendx2, recvbuf=x_crossover, source=getxfrom)
             u = numpy.concatenate((u, x_crossover), axis=1)
-            print("Complete")
         else:
             u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
-            print("All by myself, don't communicate")
         
         sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
         getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
@@ -828,53 +830,55 @@ class VTKDump_Parallel(Diagnostic):
             y_send = numpy.ascontiguousarray(y_send)
             uhat.grid.comm.Sendrecv(y_send, dest=sendy2, recvbuf=y_crossover, source=getyfrom)
             u = numpy.concatenate((u, y_crossover), axis=2)
-            print("Complete in y")
         else:
             u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
-            print("All by myself, don't communicate in y")
 
         u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
-        """if sendx2 != r:
-            print(f"Rank {uhat.grid.comm.rank} sending x to {sendx2} with tag {r}")
-            uhat.grid.comm.send(u[:, 0:1, :, :], dest=sendx2, tag=r)
-            print("After send")
-            exit()"""
-        
-        """# Receive from rank to right
-        getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
-        if getxfrom != r:
-            print(f"Rank {uhat.grid.comm.rank} receiving x from {getxfrom} with tag {(r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]}")
-            x_crossover = uhat.grid.comm.recv(source=getxfrom, tag=(r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0])
-            u = numpy.concatenate((u, x_crossover), axis=1)
-        else:
-            #print("same processor x")
-            u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
 
-        # Get rank to the top and send to top
-        sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
-        if sendy2 != r:
-            #print(f"Rank {uhat.grid.comm.rank} sending y to {sendy2} with tag {uhat.grid.comm.size+r}")
-            uhat.grid.comm.send(u[:, :, 0:1, :], dest=sendy2, tag=uhat.grid.comm.size+r)
-
-        # Receive from rank on bottom
-        getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
-        if getyfrom != r:
-            #print(f"Rank {uhat.grid.comm.rank} receiving y from {(r-uhat.grid.decomp[0])%uhat.grid.comm.size} with tag {(r-uhat.grid.decomp[0])%uhat.grid.comm.size+uhat.grid.comm.size}")
-            y_crossover = uhat.grid.comm.recv(source=getyfrom, tag=(r-uhat.grid.decomp[0])%uhat.grid.comm.size+uhat.grid.comm.size)
-            u = numpy.concatenate((u, y_crossover), axis=2)
-        else:
-            #print("same processor y")
-            u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
-            
-
-        u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)"""
-        #print("I am grid aware")
         
         coord = uhat.grid.x
+        dx = uhat.grid.dx
         x = coord[0, :, 0, 0]
         y = coord[1, 0, :, 0]
         z = coord[2, 0, 0, :]
-        
+        x = numpy.concatenate((x, numpy.array([x[-1]+dx[0]])))
+        y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
+        z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
+        start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
+        end = (x[-1]/dx[0], y[-1]/dx[1], z[-1]/dx[2])
+
+        gridToVTK(
+            self.filename.format(rank=uhat.grid.comm.rank, time=time),
+            x, y, z, 
+            pointData = dict(zip(self.names, u)),
+            start=start,
+        )
+
+        recvbuf_start = None
+        recvbuf_end = None
+
+        if uhat.grid.comm.rank == 0:
+            recvbuf_start = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
+            recvbuf_end = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
+        uhat.grid.comm.Gather(numpy.array(start), recvbuf_start, root=0)
+        uhat.grid.comm.Gather(numpy.array(end), recvbuf_end, root=0)
+        if uhat.grid.comm.rank == 0:
+            starts = [tuple(row) for row in recvbuf_start]
+            ends = [tuple(row) for row in recvbuf_end]
+            print(starts)
+            print()
+            print(ends)
+            writeParallelVTKGrid("test_full",
+                                 coordsData=(tuple(uhat.grid.box_size/dx), x.dtype),#(tuple(uhat.grid.pdims+1), x.dtype),
+                                 starts = starts,
+                                 ends=ends,
+                                 sources=[self.filename.format(rank=uhat.grid.comm.rank, time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
+            )
+
+
+        exit()
+
+        """import pyvista as pv
         # create raw coordinate grid
         grid_ijk = numpy.mgrid[
             x[0] : x[-1] + 2*(uhat.grid.box_size[0]/uhat.grid.pdims[0]) : uhat.grid.box_size[0]/(uhat.grid.pdims[0]),#x.shape[0]+1,
@@ -882,6 +886,8 @@ class VTKDump_Parallel(Diagnostic):
             z[0] : z[-1] + 2*(uhat.grid.box_size[2]/uhat.grid.pdims[2]) : uhat.grid.box_size[2]/(uhat.grid.pdims[2]) #z.shape[0]+1
         ]
 
+
+        
         # repeat array along each Cartesian axis for connectivity
         for axis in range(1, 4):
             grid_ijk = grid_ijk.repeat(2, axis=axis)
@@ -892,28 +898,36 @@ class VTKDump_Parallel(Diagnostic):
         u = u[:, 1:-1, 1:-1, 1:-1]
 
         # reorder and reshape to VTK order
-        corners = grid_ijk.transpose().reshape(-1, 3)
-        corner_values = u.transpose().reshape(-1,4)
+        #corners = grid_ijk.transpose().reshape(-1, 3)
+        corners = numpy.moveaxis(grid_ijk, 0, -1).reshape(-1, 3, order='F')
+
+        #print(corners)
+        #exit()
+        #corner_values = u.transpose().reshape(-1,4)
+        corner_values = numpy.moveaxis(u, 0, -1).reshape(-1, 4, order='F')
+        for i in range(256):
+            print(f"Location: {corners[i:i+1]}  Values: {corner_values[i:i+1]}")
+        #exit()
 
         dims = numpy.array([len(x), len(y), len(z)]) + 1
         grid = pv.ExplicitStructuredGrid(dims, corners)
         
-        '''for i in range(len(self.names)):
+        
+        grid = grid.compute_connectivity()
+        #print(grid.cell_coords(4))
+        #exit()
+        for i in range(len(self.names)):
+            #grid.point_data[self.names[i]] = corner_values[:, i]
             if i<len(corner_values[0,:]):
                 grid.point_data[self.names[i]] = corner_values[:, i]
             else:
-                break'''
-        grid = grid.compute_connectivity()
-        for i in range(len(self.names)):
-            grid.point_data[self.names[i]] = corner_values[:, i]
-            """if i<len(corner_values[0,:]):
-                grid.point_data[self.names[i]] = corner_values[:, i]
-            else:
                 print("UHOH")
-                break"""
+                break
         #grid.plot(show_edges=True)
+        grid = grid.clean()
         filename=self.filename.format(rank=uhat.grid.comm.rank, time=time)
         grid.save(filename+".vtu")
+        grid.plot(scalars="C")"""
         """if uhat.grid.comm.rank == 0:
         #    pv.MultiBlock([self.filename.format(rank=r, time=time)+".vtk" for r in range(uhat.grid.comm.size)]).save('out.pvtu')
             from xml.etree.ElementTree import Element, SubElement, tostring
