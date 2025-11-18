@@ -845,7 +845,7 @@ class VTKDump_Parallel(Diagnostic):
         y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
         z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
         start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
-        end = (x[-1]/dx[0], y[-1]/dx[1], z[-1]/dx[2])
+        end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
 
         gridToVTK(
             self.filename.format(rank=uhat.grid.comm.rank, time=time),
@@ -869,10 +869,13 @@ class VTKDump_Parallel(Diagnostic):
             print()
             print(ends)
             writeParallelVTKGrid("test_full",
-                                 coordsData=(tuple(uhat.grid.box_size/dx), x.dtype),#(tuple(uhat.grid.pdims+1), x.dtype),
+                                 coordsData=(tuple(uhat.grid.pdims+1), x.dtype),#(tuple(uhat.grid.box_size), x.dtype),#
                                  starts = starts,
                                  ends=ends,
-                                 sources=[self.filename.format(rank=uhat.grid.comm.rank, time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
+                                 sources=[self.filename.format(rank=rank, time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
+                                 pointData={
+                                    i: (u.dtype, 1) for i in self.names
+                                 },
             )
 
 
