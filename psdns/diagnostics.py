@@ -744,220 +744,101 @@ class VTKDump(Diagnostic):
        work for parallel runs (multiple MPI ranks).
     """
     def __init__(self, names, filename="./phys{time:04g}", **kwargs):
-        if kwargs['grid'].comm.size != 1:
+        """if kwargs['grid'].comm.size != 1:
             warnings.warn(
                 "VTKDump does not work with multiple MPI ranks.",
                 RuntimeWarning
-                )
+                )"""
         # We defer evtk import so it does not become a dependency
         # unless we are actually using the VTKDump diagnostic.
         import evtk
         self.gridToVTK = evtk.hl.gridToVTK
+        self.writeParallelVTKGrid = evtk.hl.writeParallelVTKGrid
         super().__init__(**kwargs)
         self.filename = filename
         self.names = names
 
     def diagnostic(self, time, equations, uhat):
         u = numpy.asarray(uhat.to_physical())
-        self.gridToVTK(
-            self.filename.format(time=time),
-            uhat.grid.x[0],
-            uhat.grid.x[1],
-            uhat.grid.x[2],
-            pointData = dict(zip(self.names, u))
-            )
-
-
-class VTKDump_Parallel(Diagnostic):
-    """VTK file dumps in parallel
-
-    This :class:`Diagnostic` class dumps full fields in physical space
-    using VTK format.  A list of the names to use for the fields must
-    be passed as *names*.  An optional *filename* pattern can be
-    passed, which will be formatted using Python string formatting
-    (:meth:`str.format`), with the value of the current timestep set
-    to *time*.
-
-    .. note::
-
-       :class:`VTKDump` uses the :mod:`evtk` module, which does not
-       work for parallel runs (multiple MPI ranks).
-    """
-    def __init__(self, names, filename="./rank{rank}_phys{time:04g}", **kwargs):
-        if kwargs['grid'].comm.size != 1:
-            warnings.warn(
-                "VTKDump does not work with multiple MPI ranks.",
-                RuntimeWarning
+        if uhat.grid.comm.size == 1:
+            self.gridToVTK(
+                self.filename.format(time=time),
+                uhat.grid.x[0],
+                uhat.grid.x[1],
+                uhat.grid.x[2],
+                pointData = dict(zip(self.names, u))
                 )
-        # We defer evtk import so it does not become a dependency
-        # unless we are actually using the VTKDump diagnostic.
-        
-        super().__init__(**kwargs)
-        self.filename = filename
-        self.names = names
-
-    def diagnostic(self, time, equations, uhat):
-        from pyevtk.hl import gridToVTK, writeParallelVTKGrid
-
-        u = numpy.asarray(uhat.to_physical())
-        #print(uhat.grid.x[:,:,0])
-        """numpy.set_printoptions(threshold=sys.maxsize)
-        print(u[3, :,:,64])
-        exit()"""
-        # Grid awareness
-        x_ind = uhat.grid.comm.rank % uhat.grid.decomp[0]
-        y_ind = int(uhat.grid.comm.rank / uhat.grid.decomp[0])
-        r = uhat.grid.comm.rank
-        # Get rank to left and send to left
-        sendx2 = (r-1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
-        getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
-        if sendx2 != r:
-            x_crossover = numpy.empty_like(u[:, 0:1, :, :])
-            x_crossover = numpy.ascontiguousarray(x_crossover)
-            x_send = u[:, 0:1, :, :]
-            x_send = numpy.ascontiguousarray(x_send)
-            uhat.grid.comm.Sendrecv(x_send, dest=sendx2, recvbuf=x_crossover, source=getxfrom)
-            u = numpy.concatenate((u, x_crossover), axis=1)
         else:
-            u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
-        
-        sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
-        getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
-        if sendy2 != r:
-            y_crossover = numpy.empty_like(u[:, :, 0:1, :])
-            y_crossover = numpy.ascontiguousarray(y_crossover)
-            y_send = u[:, :, 0:1, :]
-            y_send = numpy.ascontiguousarray(y_send)
-            uhat.grid.comm.Sendrecv(y_send, dest=sendy2, recvbuf=y_crossover, source=getyfrom)
-            u = numpy.concatenate((u, y_crossover), axis=2)
-        else:
-            u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
+            # Grid awareness
+            x_ind = uhat.grid.comm.rank % uhat.grid.decomp[0]
+            y_ind = int(uhat.grid.comm.rank / uhat.grid.decomp[0])
+            r = uhat.grid.comm.rank
+            # Get rank to left and send to left
+            sendx2 = (r-1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
+            getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
+            if sendx2 != r:
+                x_crossover = numpy.empty_like(u[:, 0:1, :, :])
+                x_crossover = numpy.ascontiguousarray(x_crossover)
+                x_send = u[:, 0:1, :, :]
+                x_send = numpy.ascontiguousarray(x_send)
+                uhat.grid.comm.Sendrecv(x_send, dest=sendx2, recvbuf=x_crossover, source=getxfrom)
+                u = numpy.concatenate((u, x_crossover), axis=1)
+            else:
+                u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
+            
+            sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
+            getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
+            if sendy2 != r:
+                y_crossover = numpy.empty_like(u[:, :, 0:1, :])
+                y_crossover = numpy.ascontiguousarray(y_crossover)
+                y_send = u[:, :, 0:1, :]
+                y_send = numpy.ascontiguousarray(y_send)
+                uhat.grid.comm.Sendrecv(y_send, dest=sendy2, recvbuf=y_crossover, source=getyfrom)
+                u = numpy.concatenate((u, y_crossover), axis=2)
+            else:
+                u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
 
-        u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
+            u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
+            
+            coord = uhat.grid.x
+            dx = uhat.grid.dx
+            x = coord[0, :, 0, 0]
+            y = coord[1, 0, :, 0]
+            z = coord[2, 0, 0, :]
+            x = numpy.concatenate((x, numpy.array([x[-1]+dx[0]])))
+            y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
+            z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
+            start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
+            end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
 
-        
-        coord = uhat.grid.x
-        dx = uhat.grid.dx
-        x = coord[0, :, 0, 0]
-        y = coord[1, 0, :, 0]
-        z = coord[2, 0, 0, :]
-        x = numpy.concatenate((x, numpy.array([x[-1]+dx[0]])))
-        y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
-        z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
-        start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
-        end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
-
-        gridToVTK(
-            self.filename.format(rank=uhat.grid.comm.rank, time=time),
-            x, y, z, 
-            pointData = dict(zip(self.names, u)),
-            start=start,
-        )
-
-        recvbuf_start = None
-        recvbuf_end = None
-
-        if uhat.grid.comm.rank == 0:
-            recvbuf_start = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
-            recvbuf_end = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
-        uhat.grid.comm.Gather(numpy.array(start), recvbuf_start, root=0)
-        uhat.grid.comm.Gather(numpy.array(end), recvbuf_end, root=0)
-        if uhat.grid.comm.rank == 0:
-            starts = [tuple(row) for row in recvbuf_start]
-            ends = [tuple(row) for row in recvbuf_end]
-            print(starts)
-            print()
-            print(ends)
-            writeParallelVTKGrid("test_full",
-                                 coordsData=(tuple(uhat.grid.pdims+1), x.dtype),#(tuple(uhat.grid.box_size), x.dtype),#
-                                 starts = starts,
-                                 ends=ends,
-                                 sources=[self.filename.format(rank=rank, time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
-                                 pointData={
-                                    i: (u.dtype, 1) for i in self.names
-                                 },
+            self.gridToVTK(
+                f"rank{uhat.grid.comm.rank}_" + self.filename.format(time=time),
+                x, y, z, 
+                pointData = dict(zip(self.names, u)),
+                start=start,
             )
 
+            recvbuf_start = None
+            recvbuf_end = None
 
-        exit()
+            if uhat.grid.comm.rank == 0:
+                recvbuf_start = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
+                recvbuf_end = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
+            uhat.grid.comm.Gather(numpy.array(start), recvbuf_start, root=0)
+            uhat.grid.comm.Gather(numpy.array(end), recvbuf_end, root=0)
+            if uhat.grid.comm.rank == 0:
+                starts = [tuple(row) for row in recvbuf_start]
+                ends = [tuple(row) for row in recvbuf_end]
+                self.writeParallelVTKGrid(self.filename.format(time=time),
+                                    coordsData=(tuple(uhat.grid.pdims+1), x.dtype),
+                                    starts = starts,
+                                    ends=ends,
+                                    sources=[f"rank{rank}_" + self.filename.format(time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
+                                    pointData={
+                                        i: (u.dtype, 1) for i in self.names
+                                    },
+                )
 
-        """import pyvista as pv
-        # create raw coordinate grid
-        grid_ijk = numpy.mgrid[
-            x[0] : x[-1] + 2*(uhat.grid.box_size[0]/uhat.grid.pdims[0]) : uhat.grid.box_size[0]/(uhat.grid.pdims[0]),#x.shape[0]+1,
-            y[0] : y[-1] + 2*(uhat.grid.box_size[1]/uhat.grid.pdims[1]) : uhat.grid.box_size[1]/(uhat.grid.pdims[1]),#y.shape[0]+1,
-            z[0] : z[-1] + 2*(uhat.grid.box_size[2]/uhat.grid.pdims[2]) : uhat.grid.box_size[2]/(uhat.grid.pdims[2]) #z.shape[0]+1
-        ]
-
-
-        
-        # repeat array along each Cartesian axis for connectivity
-        for axis in range(1, 4):
-            grid_ijk = grid_ijk.repeat(2, axis=axis)
-            u = u.repeat(2, axis=axis)
-
-        # slice off unnecessarily doubled edge coordinates
-        grid_ijk = grid_ijk[:, 1:-1, 1:-1, 1:-1]
-        u = u[:, 1:-1, 1:-1, 1:-1]
-
-        # reorder and reshape to VTK order
-        #corners = grid_ijk.transpose().reshape(-1, 3)
-        corners = numpy.moveaxis(grid_ijk, 0, -1).reshape(-1, 3, order='F')
-
-        #print(corners)
-        #exit()
-        #corner_values = u.transpose().reshape(-1,4)
-        corner_values = numpy.moveaxis(u, 0, -1).reshape(-1, 4, order='F')
-        for i in range(256):
-            print(f"Location: {corners[i:i+1]}  Values: {corner_values[i:i+1]}")
-        #exit()
-
-        dims = numpy.array([len(x), len(y), len(z)]) + 1
-        grid = pv.ExplicitStructuredGrid(dims, corners)
-        
-        
-        grid = grid.compute_connectivity()
-        #print(grid.cell_coords(4))
-        #exit()
-        for i in range(len(self.names)):
-            #grid.point_data[self.names[i]] = corner_values[:, i]
-            if i<len(corner_values[0,:]):
-                grid.point_data[self.names[i]] = corner_values[:, i]
-            else:
-                print("UHOH")
-                break
-        #grid.plot(show_edges=True)
-        grid = grid.clean()
-        filename=self.filename.format(rank=uhat.grid.comm.rank, time=time)
-        grid.save(filename+".vtu")
-        grid.plot(scalars="C")"""
-        """if uhat.grid.comm.rank == 0:
-        #    pv.MultiBlock([self.filename.format(rank=r, time=time)+".vtk" for r in range(uhat.grid.comm.size)]).save('out.pvtu')
-            from xml.etree.ElementTree import Element, SubElement, tostring
-            from xml.dom import minidom
-
-            def write_pvtu(piece_files, output="out.pvtu", datatype="Float32"):
-                vtkfile = Element("VTKFile", type="PUnstructuredGrid", version="0.1", byte_order="LittleEndian")
-                punstructured = SubElement(vtkfile, "PUnstructuredGrid")
-                # Describe your point and cell data layout here if needed
-                ppoints = SubElement(punstructured, "PPoints")
-                SubElement(ppoints, "PDataArray",
-                    type=datatype,
-                    NumberOfComponents="3",
-                    Name="Points")
-                for f in piece_files:
-                    SubElement(punstructured, "Piece", Source=f)
-
-                xml_str = minidom.parseString(tostring(vtkfile)).toprettyxml(indent="  ")
-                with open(output, "w") as fh:
-                    fh.write(xml_str)
-            
-            files = [self.filename.format(rank=r, time=time)+".vtu" for r in range(uhat.grid.comm.size)]
-            write_pvtu(files)
-        exit()"""
-
-
-        
 
 '''class GrowthRate(Diagnostic):
     """Calculated the growth rate"""
