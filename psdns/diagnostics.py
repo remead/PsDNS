@@ -737,18 +737,8 @@ class VTKDump(Diagnostic):
     passed, which will be formatted using Python string formatting
     (:meth:`str.format`), with the value of the current timestep set
     to *time*.
-
-    .. note::
-
-       :class:`VTKDump` uses the :mod:`evtk` module, which does not
-       work for parallel runs (multiple MPI ranks).
     """
     def __init__(self, names, filename="./phys{time:04g}", **kwargs):
-        """if kwargs['grid'].comm.size != 1:
-            warnings.warn(
-                "VTKDump does not work with multiple MPI ranks.",
-                RuntimeWarning
-                )"""
         # We defer evtk import so it does not become a dependency
         # unless we are actually using the VTKDump diagnostic.
         import evtk
@@ -760,84 +750,79 @@ class VTKDump(Diagnostic):
 
     def diagnostic(self, time, equations, uhat):
         u = numpy.asarray(uhat.to_physical())
-        if uhat.grid.comm.size == 1:
-            self.gridToVTK(
-                self.filename.format(time=time),
-                uhat.grid.x[0],
-                uhat.grid.x[1],
-                uhat.grid.x[2],
-                pointData = dict(zip(self.names, u))
-                )
+        # Grid awareness
+        x_ind = uhat.grid.comm.rank % uhat.grid.decomp[0]
+        y_ind = int(uhat.grid.comm.rank / uhat.grid.decomp[0])
+        r = uhat.grid.comm.rank
+        
+        # Get rank to left and send to left
+        sendx2 = (r-1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
+        getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
+        # Handle if sending to another rank versus sending to self
+        if sendx2 != r:
+            x_crossover = numpy.empty_like(u[:, 0:1, :, :])
+            x_crossover = numpy.ascontiguousarray(x_crossover)
+            x_send = u[:, 0:1, :, :]
+            x_send = numpy.ascontiguousarray(x_send)
+            uhat.grid.comm.Sendrecv(x_send, dest=sendx2, recvbuf=x_crossover, source=getxfrom)
+            u = numpy.concatenate((u, x_crossover), axis=1)
         else:
-            # Grid awareness
-            x_ind = uhat.grid.comm.rank % uhat.grid.decomp[0]
-            y_ind = int(uhat.grid.comm.rank / uhat.grid.decomp[0])
-            r = uhat.grid.comm.rank
-            # Get rank to left and send to left
-            sendx2 = (r-1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
-            getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
-            if sendx2 != r:
-                x_crossover = numpy.empty_like(u[:, 0:1, :, :])
-                x_crossover = numpy.ascontiguousarray(x_crossover)
-                x_send = u[:, 0:1, :, :]
-                x_send = numpy.ascontiguousarray(x_send)
-                uhat.grid.comm.Sendrecv(x_send, dest=sendx2, recvbuf=x_crossover, source=getxfrom)
-                u = numpy.concatenate((u, x_crossover), axis=1)
-            else:
-                u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
-            
-            sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
-            getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
-            if sendy2 != r:
-                y_crossover = numpy.empty_like(u[:, :, 0:1, :])
-                y_crossover = numpy.ascontiguousarray(y_crossover)
-                y_send = u[:, :, 0:1, :]
-                y_send = numpy.ascontiguousarray(y_send)
-                uhat.grid.comm.Sendrecv(y_send, dest=sendy2, recvbuf=y_crossover, source=getyfrom)
-                u = numpy.concatenate((u, y_crossover), axis=2)
-            else:
-                u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
+            u = numpy.concatenate((u, u[:, 0:1, :, :]), axis=1)
+        
+        # Get rank on top and send to top
+        sendy2 = (r+uhat.grid.decomp[0])%uhat.grid.comm.size
+        getyfrom = (r-uhat.grid.decomp[0])%uhat.grid.comm.size
+        # Handle if sending to another rank versus sending to self
+        if sendy2 != r:
+            y_crossover = numpy.empty_like(u[:, :, 0:1, :])
+            y_crossover = numpy.ascontiguousarray(y_crossover)
+            y_send = u[:, :, 0:1, :]
+            y_send = numpy.ascontiguousarray(y_send)
+            uhat.grid.comm.Sendrecv(y_send, dest=sendy2, recvbuf=y_crossover, source=getyfrom)
+            u = numpy.concatenate((u, y_crossover), axis=2)
+        else:
+            u = numpy.concatenate((u, u[:, :, 0:1, :]), axis=2)
 
-            u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
-            
-            coord = uhat.grid.x
-            dx = uhat.grid.dx
-            x = coord[0, :, 0, 0]
-            y = coord[1, 0, :, 0]
-            z = coord[2, 0, 0, :]
-            x = numpy.concatenate((x, numpy.array([x[-1]+dx[0]])))
-            y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
-            z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
-            start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
-            end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
+        u = numpy.concatenate((u, u[:,:,:,0:1]), axis=3)
+        
+        coord = uhat.grid.x
+        dx = uhat.grid.dx
+        x = coord[0, :, 0, 0]
+        y = coord[1, 0, :, 0]
+        z = coord[2, 0, 0, :]
+        x = numpy.concatenate((x, numpy.array([x[-1]+dx[0]])))
+        y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
+        z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
+        start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
+        end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
 
-            self.gridToVTK(
-                f"rank{uhat.grid.comm.rank}_" + self.filename.format(time=time),
-                x, y, z, 
-                pointData = dict(zip(self.names, u)),
-                start=start,
+        self.gridToVTK(
+            f"rank{uhat.grid.comm.rank}_" + self.filename.format(time=time),
+            x, y, z, 
+            pointData = dict(zip(self.names, u)),
+            start=start,
+        )
+
+        recvbuf_start = None
+        recvbuf_end = None
+
+        if uhat.grid.comm.rank == 0:
+            recvbuf_start = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
+            recvbuf_end = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
+        uhat.grid.comm.Gather(numpy.array(start), recvbuf_start, root=0)
+        uhat.grid.comm.Gather(numpy.array(end), recvbuf_end, root=0)
+        if uhat.grid.comm.rank == 0:
+            starts = [tuple(row) for row in recvbuf_start]
+            ends = [tuple(row) for row in recvbuf_end]
+            self.writeParallelVTKGrid(self.filename.format(time=time),
+                                coordsData=(tuple(uhat.grid.pdims+1), x.dtype),
+                                starts = starts,
+                                ends=ends,
+                                sources=[f"rank{rank}_" + self.filename.format(time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
+                                pointData={
+                                    i: (u.dtype, 1) for i in self.names
+                                },
             )
-
-            recvbuf_start = None
-            recvbuf_end = None
-
-            if uhat.grid.comm.rank == 0:
-                recvbuf_start = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
-                recvbuf_end = numpy.empty((uhat.grid.comm.size, 3), dtype=float)
-            uhat.grid.comm.Gather(numpy.array(start), recvbuf_start, root=0)
-            uhat.grid.comm.Gather(numpy.array(end), recvbuf_end, root=0)
-            if uhat.grid.comm.rank == 0:
-                starts = [tuple(row) for row in recvbuf_start]
-                ends = [tuple(row) for row in recvbuf_end]
-                self.writeParallelVTKGrid(self.filename.format(time=time),
-                                    coordsData=(tuple(uhat.grid.pdims+1), x.dtype),
-                                    starts = starts,
-                                    ends=ends,
-                                    sources=[f"rank{rank}_" + self.filename.format(time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
-                                    pointData={
-                                        i: (u.dtype, 1) for i in self.names
-                                    },
-                )
 
 
 '''class GrowthRate(Diagnostic):
