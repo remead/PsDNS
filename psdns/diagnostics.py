@@ -738,7 +738,7 @@ class VTKDump(Diagnostic):
     (:meth:`str.format`), with the value of the current timestep set
     to *time*.
     """
-    def __init__(self, names, filename="./phys{time:04g}", **kwargs):
+    def __init__(self, names, filename="./phys{time:04g}_rank{rank}", **kwargs):
         # We defer evtk import so it does not become a dependency
         # unless we are actually using the VTKDump diagnostic.
         import evtk
@@ -754,7 +754,7 @@ class VTKDump(Diagnostic):
         x_ind = uhat.grid.comm.rank % uhat.grid.decomp[0]
         y_ind = int(uhat.grid.comm.rank / uhat.grid.decomp[0])
         r = uhat.grid.comm.rank
-        
+
         # Get rank to left and send to left
         sendx2 = (r-1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
         getxfrom = (r+1)%uhat.grid.decomp[0] + ((r)//uhat.grid.decomp[0]) * uhat.grid.decomp[0]
@@ -797,7 +797,7 @@ class VTKDump(Diagnostic):
         end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
 
         self.gridToVTK(
-            f"rank{uhat.grid.comm.rank}_" + self.filename.format(time=time),
+            self.filename.format(time=time, rank=uhat.grid.comm.rank),
             x, y, z, 
             pointData = dict(zip(self.names, u)),
             start=start,
@@ -814,11 +814,11 @@ class VTKDump(Diagnostic):
         if uhat.grid.comm.rank == 0:
             starts = [tuple(row) for row in recvbuf_start]
             ends = [tuple(row) for row in recvbuf_end]
-            self.writeParallelVTKGrid(self.filename.format(time=time),
+            self.writeParallelVTKGrid(self.filename.format(time=time, rank=uhat.grid.comm.rank),
                                 coordsData=(tuple(uhat.grid.pdims+1), x.dtype),
                                 starts = starts,
                                 ends=ends,
-                                sources=[f"rank{rank}_" + self.filename.format(time=time) + ".vtr" for rank in range(uhat.grid.comm.size)],
+                                sources=[self.filename.format(time=time, rank=rank_) + ".vtr" for rank_ in range(uhat.grid.comm.size)],
                                 pointData={
                                     i: (u.dtype, 1) for i in self.names
                                 },
@@ -1131,3 +1131,5 @@ class L_int(Diagnostic):
         # A simple isotropic estimate (average of two directions)
         #L_iso_est = 0.5*(L_x + L_y)
         #print("Isotropic estimate (avg):", L_iso_est)
+
+
