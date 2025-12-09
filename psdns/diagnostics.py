@@ -744,7 +744,7 @@ class VTKDump(Diagnostic):
     (:meth:`str.format`), with the value of the current timestep set
     to *time*.
     """
-    def __init__(self, names, filename="./phys{time:04g}_rank{rank}", **kwargs):
+    def __init__(self, names, filename="./rank{rank}_phys{time:04g}", **kwargs):
         # We defer evtk import so it does not become a dependency
         # unless we are actually using the VTKDump diagnostic.
         import evtk
@@ -799,16 +799,25 @@ class VTKDump(Diagnostic):
         x = numpy.concatenate((x, numpy.array([x[-1]+dx[0]])))
         y = numpy.concatenate((y, numpy.array([y[-1]+dx[1]])))
         z = numpy.concatenate((z, numpy.array([z[-1]+dx[2]])))
-        start = (x[0]/dx[0], y[0]/dx[1], z[0]/dx[2])
-        end = (x[-1]/dx[1], y[-1]/dx[1], z[-1]/dx[2])
+
+        # Round to prevent issues with extent caused by numerical precision
+        start = (numpy.round(x[0]/dx[0]), numpy.round(y[0]/dx[1]), numpy.round(z[0]/dx[2]))
+        end = (numpy.round(x[-1]/dx[1]), numpy.round(y[-1]/dx[1]), numpy.round(z[-1]/dx[2]))
+
+        from pathlib import Path
+        path = Path(self.filename)
+        directory = path.parent
+        file = path.name
+        sub_dir = Path(f"{directory}/vtk_t{time}")
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{sub_dir}/{file}"
 
         self.gridToVTK(
-            self.filename.format(time=time, rank=uhat.grid.comm.rank),
+            filename.format(time=time, rank=uhat.grid.comm.rank),
             x, y, z, 
             pointData = dict(zip(self.names, u)),
             start=start,
         )
-
         recvbuf_start = None
         recvbuf_end = None
 
@@ -824,9 +833,8 @@ class VTKDump(Diagnostic):
                                 coordsData=(tuple(uhat.grid.pdims+1), x.dtype),
                                 starts = starts,
                                 ends=ends,
-                                sources=[self.filename.format(time=time, rank=rank_) + ".vtr" for rank_ in range(uhat.grid.comm.size)],
+                                sources=[filename.format(time=time, rank=rank_) + ".vtr" for rank_ in range(uhat.grid.comm.size)],
                                 pointData={
                                     i: (u.dtype, 1) for i in self.names
                                 },
             )
-
