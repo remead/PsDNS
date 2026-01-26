@@ -437,8 +437,10 @@ class SpectralGrid(object):
             ]
 
     def __del__(self):
-        self.comm_zy.Free()
-        self.comm_yx.Free()
+        if hasattr(self, "comm_zy") and self.comm_zy != MPI.COMM_NULL:
+            self.comm_zy.Free()
+        if hasattr(self, "comm_yx") and self.comm_yx != MPI.COMM_NULL:
+            self.comm_yx.Free()
 
     def __str__(self):
         return textwrap.dedent(f"""\
