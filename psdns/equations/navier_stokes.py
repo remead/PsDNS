@@ -547,17 +547,39 @@ class Boussinesq(RotationalNavierStokes):
         unstable interface, and *delta2* is the width of the stable 
         interface.
         """
+
         u = PhysicalArray(grid, (4,))
         x = u.grid.x
         x1 = u.grid.box_size[2]/2
         x2 = u.grid.box_size[2]
+        '''vx = u.grid.x[0,:,:,0].ravel()
+        vy = u.grid.x[1,:,:,0].ravel()
+        val = z.ravel()
+        import pandas as pd
+        df = pd.DataFrame({"vx": vx, "vy": vy, "value": val})
+        df.to_csv(f"z_interface_{grid.pdims[0]}_{grid.pdims[1]}.csv", index=False, header=False)
+        ###numpy.savetxt(f"z_interface_{grid.pdims[0]}_{grid.pdims[1]}.csv", z, delimiter=',')
+        exit()'''
         u[3] = (
             profile((x[2] - x1 - z[:,:,numpy.newaxis])/delta1)
             - profile(x[2]/delta2)
             - profile((x[2] - x2)/delta2)
             )
+        """vx = u.grid.x[0].ravel()
+        vy = u.grid.x[1].ravel()
+        vz = u.grid.x[2].ravel()
+        val = numpy.asarray(u[3]).ravel()
+        import pandas as pd
+        df = pd.DataFrame({"vx": vx, "vy": vy, "vz": vz, "value": val})
+        df.to_csv(f"z_interface_{grid.pdims[0]}_{grid.pdims[1]}.csv", index=False, header=False)
+        exit()"""
+        #print(x[2,0,0,8])
+        #print(u[3,11,1,278])
+        #exit()
         s = u.to_spectral()
         s._data = numpy.ascontiguousarray(s._data)
+        #print(s)
+        #exit()
         return s
 
     def band(self, grid, kmin, kmax, seed=123):
@@ -682,18 +704,26 @@ class Boussinesq(RotationalNavierStokes):
                 ii = (-i) % M[0]
                 jj = (-j) % M[1]
                 s[ii, jj] = numpy.conj(s[i, j])
-
         s[grid.sdims[0]//2+1:-(grid.sdims[0]-1)//2, :] = 0
         s[:, grid.sdims[1]//2+1:-(grid.sdims[1]-1)//2] = 0
 
+        #print(numpy.abs(s[10,:]))
+        #exit()
+        #row_mask = numpy.any(s != 0, axis=1)
+        #col_mask = numpy.any(s != 0, axis=0)
+        #s = s[row_mask][:, col_mask]
         z = numpy.fft.ifft2(s, norm="forward").real
+        #print(z)
+        #print(numpy.sum(numpy.abs(z)))
+        #print(numpy.sum(numpy.abs(numpy.fft.fft2(z,norm="forward")[0,:] - s[0,:])))
+        #print(s[0,:])
+        #exit()
         #print(s)
         #print(numpy.sum(s*s.conjugate()).real)
         #print(numpy.sum(z**2)/numpy.prod(z.shape))
-        #exit()
         return z
     
-    def band_amps_wave_par(self, grid, kmin, kmax, spectrum, scale, seed=123):
+    '''def band_amps_wave_par(self, grid, kmin, kmax, spectrum, scale, seed=123):
         if seed == None:
             warnings.warn(
                 "A seed of None for Boussinesq.band() will result "
@@ -726,7 +756,7 @@ class Boussinesq(RotationalNavierStokes):
         z = numpy.ascontiguousarray(numpy.fft.ifft2(s, axis=(-4, -3), norm='forward'))
         print(z.shape)
         exit()"""
-        return z
+        return z'''
 
 
     def band_amps_wave_par_perturbed_interface(self, grid, kmin, kmax, spectrum, scale, delta1, delta2, profile=scipy.special.erf, seed=123):
@@ -738,7 +768,200 @@ class Boussinesq(RotationalNavierStokes):
         A[numpy.isnan(A)] = 0
     
         rng = numpy.random.default_rng(seed)
-        #randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+        for r in range(grid.comm.size):
+            if grid.comm.rank == r:
+                if r == 0:
+                    rng = numpy.random.default_rng(seed)
+                else:
+                    state = grid.comm.recv(source=r-1, tag=77)
+                    rng = numpy.random.default_rng()
+                    rng.bit_generator.state = state
+                if grid._local_z_slice.start == 0:
+                    #randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+                    randmat = rng.uniform(0, 2*numpy.pi, numpy.prod(A.shape)).reshape((A.shape[1], A.shape[0])).T
+                else:
+                    randmat = numpy.zeros(A.shape)
+                if r < grid.comm.size - 1:
+                    state = rng.bit_generator.state
+                    grid.comm.send(state, dest=r+1, tag=77)
+
+        ######### LOGIC ONLY WORKS IN SERIAL ##################
+        """print(f"Rank {grid.comm.rank} k:\n{grid.k[:2,:,:,0]}")
+        exit()"""
+        """Es = A * numpy.exp(1j*randmat)
+        E_keep = Es [:, :(A.shape[2]+1)//2]
+        if A.shape[2] % 2 != 0:
+            E_mirror = E_keep[:, 1:]
+            E_mirror = numpy.fliplr(numpy.flidud(E_mirror))
+        else:
+            E_mirror = E_keep[:, 1:-1]
+            E_mirror = numpy.fliplr(numpy.flidud(E_mirror))
+        E_keep = numpy.concatenate[E_keep, E_mirror]"""
+        #######################################################
+
+        s_2d[3,:,:,0] = A * numpy.exp(1j*randmat)
+        s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) | (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) |
+                        (grid.k[1,:,:,0]==grid.pdims[0]/2))] = s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) |
+                        (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) |
+                        (grid.k[1,:,:,0]==grid.pdims[0]/2))].real
+        
+        u = s_2d.to_physical()
+        u_hat = u.to_spectral_2Dxy()
+        z = u[3,:,:,0]
+        x = u.grid.x
+        x1 = u.grid.box_size[2]/2
+        x2 = u.grid.box_size[2]
+        u[3] = (
+            profile((x[2] - x1 - z[:,:,numpy.newaxis])/delta1)
+            - profile(x[2]/delta2)
+            - profile((x[2] - x2)/delta2)
+            )
+        s = u.to_spectral()
+        s._data = numpy.ascontiguousarray(s._data)
+        return s
+
+
+    def band_amps_wave_par_perturbed_interface2(self, grid, kmin, kmax, spectrum, scale, delta1, delta2, profile=scipy.special.erf, seed=123):
+        # Random numbers generated transpose to what is done in the serial version ==> Different results will be obtained
+        u = PhysicalArray(grid, (4,))
+
+        s_2d = u.to_spectral_2Dxy()
+        kmag = numpy.sqrt(numpy.sum((grid.k[:2,:,:,0]/(grid.dk[:2, None, None]*scale))**2, axis=0))
+        A = spectrum(kmag, kmin, kmax) * numpy.sqrt((2*numpy.pi)**2 / (grid.box_size[0] * grid.box_size[1]))
+        A[numpy.isnan(A)] = 0
+
+        # Need to revisit this to optimize, right now, just generating random numbers 
+        # for all k values, but they will not all be used
+        rng = numpy.random.default_rng(seed)
+        for r in range(grid.comm.size):
+            if grid.comm.rank == r:
+                if r == 0:
+                    rng = numpy.random.default_rng(seed)
+                else:
+                    state = grid.comm.recv(source=r-1, tag=77)
+                    rng = numpy.random.default_rng()
+                    rng.bit_generator.state = state
+                if grid._local_z_slice.start == 0:
+                    #randmat = rng.uniform(0, 2*numpy.pi, size=A.shape)
+                    randmat = rng.uniform(0, 2*numpy.pi, numpy.prod(A.shape)).reshape((A.shape[1], A.shape[0])).T
+                else:
+                    randmat = numpy.zeros(A.shape)
+                if r < grid.comm.size - 1:
+                    state = rng.bit_generator.state
+                    grid.comm.send(state, dest=r+1, tag=77)
+
+
+        
+        # Determine which communicators are in the upper part of the domain as only need to set
+        # values in the upper part of the domain
+        if 0 in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+            top_z = 1
+            k = grid.k[:2,:,:,0]
+            mask = numpy.all(k[1] >= 0, axis = 0)
+            s = numpy.where(mask, A * numpy.exp(1j * randmat), -1)
+            #print(f"Rank {grid.comm.rank} randmat:\n{randmat}")
+            #print(f"Rank {grid.comm.rank} k:\n{grid.k[:2,:,:,0]}\nmask:\n{mask}\ns:{s[:,0]}")
+        else:
+            top_z = 0
+            s = numpy.zeros(grid.k[0,:,:,0].shape)
+        z_subcomm = grid.comm.Split(color=top_z, key=grid.comm.rank)
+        if top_z == 1:
+            ky_bounds = grid.k[1,0,:,0] #{f"Rank {grid.comm.rank} start_ky": grid.k[1,0,0,0], f"Rank {grid.comm.rank} end_ky": grid.k[1,0,-1,0]}
+            all_ky_bounds = z_subcomm.allgather(ky_bounds)
+            #print(f"Rank {grid.comm.rank}: all_ky_bounds\n{all_ky_bounds}")
+
+            lookup = {}
+            for r in range(len(all_ky_bounds)):
+                for idx, val in enumerate(all_ky_bounds[r]):
+                    lookup[val] = (r,idx)
+            #if z_subcomm.rank == 0:
+                #print(lookup)
+            send_out = numpy.ones((ky_bounds.shape[0], 4)) * -1 # keeps track of values to send to which rank and index
+                                                            # The first column is the ky value, the second and third are
+                                                            # are the rank and index of the negative ky value,
+                                                            # the fourth column is the index of the rank it lives on
+            count = 0
+            for k0 in ky_bounds:
+                if k0 > 0:
+                    neg_rank, neg_idx = lookup[-k0]
+                    send_out[count, :] = [k0, neg_rank, neg_idx, count]
+                count += 1
+            send_out = send_out[send_out[:,1] != -1]
+
+            #print(f"Rank {grid.comm.rank} send_out:\n{send_out}\nall_ky_bounds:\n{all_ky_bounds}")
+            #exit()
+            
+            #print(f"Rank {grid.comm.rank} send_out:\n{send_out}")
+            #print(numpy.flipud(s[:,send_out[:,3].transpose().astype(int)]))
+            #print(f"{send_out[:, 2][numpy.newaxis,:].shape},   {numpy.flipud(s[:,send_out[:,3].transpose().astype(int)]).shape}")
+            #exit()
+            send_mat = numpy.concatenate((send_out[:, 2][numpy.newaxis,:], numpy.flipud(s[:,send_out[:,3].transpose().astype(int)])),axis=0).transpose()
+            sendbuf_flat = send_mat.ravel()
+            #print(f"Rank {grid.comm.rank}\n{sendbuf_flat}")
+            sendcounts = numpy.bincount(send_out[:,1].astype(int), minlength=z_subcomm.size) * (s[:,0].shape[0] + 1)
+            senddispls = numpy.zeros(z_subcomm.size, dtype=int)
+            senddispls[1:] = numpy.cumsum(sendcounts[:-1])
+            recvcounts = numpy.empty(z_subcomm.size, dtype=int)
+            z_subcomm.Alltoall(sendcounts, recvcounts)
+            #print(recvcounts)
+            recvdispls = numpy.zeros(z_subcomm.size, dtype=int)
+            recvdispls[1:] = numpy.cumsum(recvcounts[:-1])
+            recvbuf_flat = numpy.empty(recvcounts.sum(), dtype=numpy.complex128)
+            z_subcomm.Alltoallv(
+                [sendbuf_flat, sendcounts, senddispls, MPI.DOUBLE_COMPLEX],
+                [recvbuf_flat, recvcounts, recvdispls, MPI.DOUBLE_COMPLEX],
+            )
+            recvbuf2D = recvbuf_flat.reshape(-1, s[:,0].shape[0] + 1)
+            #print(f"Rank {grid.comm.rank} s before:\n{s}")
+            if recvbuf2D.shape[0] != 0:
+                #print(f"Rank {z_subcomm.rank}\n{recvbuf2D[:,0].astype(int)}")
+                s[:,recvbuf2D[:,0].astype(int)] = recvbuf2D[:,1:].transpose()
+            #print(f"Rank {grid.comm.rank} s after:\n{s}")
+        
+        #print(f"Rank {grid.comm.rank} s:\n{s}")
+        #exit()
+        s_2d[3,:,:,0] = s
+        s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) | (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) |
+                        (grid.k[1,:,:,0]==grid.pdims[0]/2))] = s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) |
+                        (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) |
+                        (grid.k[1,:,:,0]==grid.pdims[0]/2))].real
+        sum_s2d = numpy.sum((s_2d[3,:,:,0]*s_2d[3,:,:,0].conjugate()).real)
+        print(f"Rank {grid.comm.rank}: sum_s2d: {sum_s2d}")
+
+        u = s_2d.to_physical()
+        #print(f"Rank {grid.comm.rank} u:\n{u[3,:,:,0]}")
+        #exit()
+        z = u[3,:,:,0]
+        sum_z = numpy.sum((z*z)/numpy.prod(z.shape))
+        print(f"Rank {grid.comm.rank}: sum_z: {sum_z}")
+        print(f"Rank {grid.comm.rank}: sum_z/sum_s2d: {sum_z/sum_s2d}")
+        print(f"Rank {grid.comm.rank}: sum_s2d/sum_z: {sum_s2d/sum_z}")
+        exit()
+        
+        x = u.grid.x
+        x1 = u.grid.box_size[2]/2
+        x2 = u.grid.box_size[2]
+        u[3] = (
+            profile((x[2] - x1 - z[:,:,numpy.newaxis])/delta1)
+            - profile(x[2]/delta2)
+            - profile((x[2] - x2)/delta2)
+            )
+        s_2 = u.to_spectral()
+        s_2._data = numpy.ascontiguousarray(s_2._data)
+        #exit()
+        return s_2
+
+
+    def band_amps_wave_par_perturbed_interface3(self, grid, kmin, kmax, spectrum, scale, delta1, delta2, profile=scipy.special.erf, seed=123):
+        # Random numbers generated transpose to what is done in the serial version ==> Different results will be obtained
+        u = PhysicalArray(grid, (4,))
+        s_2d = u.to_spectral_2Dxy()
+        kmag = numpy.sqrt(numpy.sum((grid.k[:2,:,:,0]/(grid.dk[:2, None, None]*scale))**2, axis=0))
+        A = spectrum(kmag, kmin, kmax) * numpy.sqrt((2*numpy.pi)**2 / (grid.box_size[0] * grid.box_size[1]))
+        A[numpy.isnan(A)] = 0
+
+         
+        rng = numpy.random.default_rng(seed)
         for r in range(grid.comm.size):
             if grid.comm.rank == r:
                 if r == 0:
@@ -756,15 +979,18 @@ class Boussinesq(RotationalNavierStokes):
                     state = rng.bit_generator.state
                     grid.comm.send(state, dest=r+1, tag=77)
         
-        s_2d[3,:,:,0] = A * numpy.exp(1j*randmat)
-        s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) | (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) | 
-                        (grid.k[1,:,:,0]==grid.pdims[0]/2))] = s_2d[3,:,:,0][((grid.k[0,:,:,0]==0) | 
-                        (grid.k[0,:,:,0]==grid.pdims[0]/2)) & ((grid.k[1,:,:,0]==0) | 
-                        (grid.k[1,:,:,0]==grid.pdims[0]/2))].real
-        
+        s_2d[3,:,:,0] = numpy.exp(1j * randmat)
+        s_2d = s_2d.to_physical().to_spectral_2Dxy()
+        # Renormalize so the magnitude of each complex number is 1
+        s2d_after_renorm = s_2d/numpy.abs(s_2d)
+        s2d_after_renorm[numpy.abs(s_2d) <= 1e-16] = 0 # make sure that if the magnitudes were 0 within machine precision they remain 0
+        s_2d = s2d_after_renorm
+        s_2d[3,:,:,0] *= A
+
         u = s_2d.to_physical()
-        z = u[3,:,:,0]
-        
+        z = u[3,:,:,0] * 1 # prevent z from just pointing to u to clear
+
+        u[:] = 0 # ensure nothing got messed up
         x = u.grid.x
         x1 = u.grid.box_size[2]/2
         x2 = u.grid.box_size[2]
@@ -773,6 +999,7 @@ class Boussinesq(RotationalNavierStokes):
             - profile(x[2]/delta2)
             - profile((x[2] - x2)/delta2)
             )
+        
         s = u.to_spectral()
         s._data = numpy.ascontiguousarray(s._data)
         return s
