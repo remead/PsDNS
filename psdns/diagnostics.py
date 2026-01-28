@@ -582,10 +582,6 @@ class Spectra(Diagnostic):
         nbins = int(grid.kmax/dk)+1
         spectrum = numpy.zeros([nbins])
         ispectrum = numpy.zeros([nbins], dtype=int)
-        """print(numpy.sum(numpy.abs(u[0])))
-        print(numpy.sum(numpy.abs(u[1])))
-        print(numpy.sum(numpy.abs(u[2])))
-        print(u.shape)"""
         for k, v in numpy.nditer([grid.kmag, u]):
             spectrum[int(k/dk)] += v
             ispectrum[int(k/dk)] += 1
@@ -610,15 +606,13 @@ class Spectra(Diagnostic):
             uhat.grid
             )
         if uhat.grid.comm.rank == 0:
-            #print("\nRank " + str(uhat.grid.comm.rank) + "  k:\n" + str(k))
-            #print("\nRank " + str(uhat.grid.comm.rank) + "  spectrum:\n" + str(spectrum))
             for i, s in zip(k, spectrum):
                 self.outfile.write("{} {}\n".format(i, s))
             self.outfile.write("\n\n")
             self.outfile.flush()
 
 
-class Spectra2D(Diagnostic):
+class Spectra2D_par(Diagnostic):
     r"""A diagnostic class for concentration spectra in 2D
     """
     def __init__(self, scale=1, **kwargs):
@@ -641,6 +635,9 @@ class Spectra2D(Diagnostic):
         ispectrum = grid.comm.reduce(ispectrum)
         if grid.comm.rank == 0:
             spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+            print(sum(spectrum*spectrum))
+            print(spectrum)
+            exit()
         return k, spectrum
         
     def diagnostic(self, time, equations, uhat):
@@ -649,11 +646,12 @@ class Spectra2D(Diagnostic):
         The integral cannot be calculated as a simple Riemann sum,
         because the binning is not smooth enough.  Instead, this routine
         caclulates the shell average, and then multiplies by the shell
-        surface area.
+        perimeter.
         """
         u = uhat.to_physical()
         uhat2d = u.to_spectral_2Dxy()
         midplane = uhat.grid.box_size[2]/2
+        # Get data in the midplane
         if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
             mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
             uhat2d = uhat2d[3,:,:, mid_idx]
@@ -669,6 +667,51 @@ class Spectra2D(Diagnostic):
                 self.outfile.write("{} {}\n".format(i, s))
             self.outfile.write("\n\n")
             self.outfile.flush()
+
+
+class Spectra2D(Diagnostic):
+    r"""A diagnostic class for concentration spectra in 2D
+    """
+    def __init__(self, scale=1, **kwargs):
+        super().__init__(**kwargs)
+        self.scale = scale
+
+    def integrate_shell(self, u, dk, grid):
+        nbins = int(grid.kmax2D/dk)+1
+        spectrum = numpy.zeros([nbins])
+        ispectrum = numpy.zeros([nbins], dtype=int)
+        for k, v in numpy.nditer([grid.kmag_2D, u]):
+            spectrum[int(k/dk)] += v
+            ispectrum[int(k/dk)] += 1
+        k = numpy.arange(nbins)*dk
+        spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+        #print(sum(spectrum*spectrum))
+        #print(spectrum)
+        #exit()
+        return k, spectrum
+
+    def diagnostic(self, time, equations, uhat):
+        """Write the spectrum to a file
+
+        The integral cannot be calculated as a simple Riemann sum,
+        because the binning is not smooth enough.  Instead, this routine
+        caclulates the shell average, and then multiplies by the shell
+        surface area.
+        """
+        u = uhat.to_physical()
+        u_plane = u[:, :, :, int(u.shape[3]/2)]
+        uhat2d = numpy.fft.fft2(u_plane, axes=(-2, -1), norm="forward")
+        N = uhat.grid.sdims
+        i0 = numpy.array([*range(0, N[0]//2+1), *range(-((N[0]-1)//2), 0)])
+        uhat2d = uhat2d[3, i0[:, None], i0]
+        k, spectrum = self.integrate_shell(
+            0.5 *  (uhat2d*uhat2d.conjugate()).real,
+            numpy.prod(uhat.grid.dk[:2])**(1/2),
+            uhat.grid)
+        for i, s in zip(k, spectrum):
+            self.outfile.write("{} {}\n".format(i, s))
+        self.outfile.write("\n\n")
+        self.outfile.flush()
 
 
 class Integral_Length(Diagnostic):
@@ -709,9 +752,9 @@ class Integral_Length(Diagnostic):
         midplane = uhat.grid.box_size[2]/2
         if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
             mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
-            uhat2d = uhat2d[3,:,:, mid_idx]
+            uhat2d = uhat2d[:2,:,:, mid_idx]
         else:
-            uhat2d = numpy.zeros(uhat2d[3,:,:, 0].shape)
+            uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
         k, spectrum = self.integrate_shell(
             0.5 *  (uhat2d*uhat2d.conjugate()).real, 
             numpy.prod(uhat.grid.dk[:2])**(1/2), 
@@ -721,6 +764,228 @@ class Integral_Length(Diagnostic):
             l_int = numpy.sum(spectrum[1:]/k[1:]) / numpy.sum(spectrum[1:])
             self.outfile.write("{} {}\n".format(time, l_int))
             self.outfile.flush()
+
+
+class Integral_Length_noispectrum(Diagnostic):
+    r"""A diagnostic class for concentration spectra in 2D
+    """
+    def __init__(self, scale=1, **kwargs):
+        super().__init__(**kwargs)
+        self.scale = scale
+        
+
+    def integrate_shell(self, u, dk, grid):
+        nbins = int(grid.kmax2D/dk)+1
+        spectrum = numpy.zeros([nbins])
+        midplane = grid.box_size[2]/2
+        if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+            for k, v in numpy.nditer([grid.kmag_2D, u]):
+                spectrum[int(k/dk)] += v
+        k = numpy.arange(nbins)*dk
+
+        spectrum = grid.comm.reduce(spectrum)
+        if grid.comm.rank == 0:
+            spectrum *= 2*numpy.pi*k/numpy.prod(grid.dk[:2])*dk*self.scale
+        return k, spectrum
+        
+    def diagnostic(self, time, equations, uhat):
+        """Write the spectrum to a file
+
+        The integral cannot be calculated as a simple Riemann sum,
+        because the binning is not smooth enough.  Instead, this routine
+        caclulates the shell average, and then multiplies by the shell
+        surface area.
+        """
+        u = uhat.to_physical()
+        uhat2d = u.to_spectral_2Dxy()
+        midplane = uhat.grid.box_size[2]/2
+        if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
+            mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
+            uhat2d = uhat2d[:2,:,:, mid_idx]
+        else:
+            uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
+        k, spectrum = self.integrate_shell(
+            0.5 *  (uhat2d*uhat2d.conjugate()).real, 
+            #0.5 *  numpy.sum((uhat2d*uhat2d.conjugate()).real, axis=0), 
+            numpy.prod(uhat.grid.dk[:2])**(1/2), 
+            uhat.grid)
+        
+        if uhat.grid.comm.rank == 0:
+            l_int = numpy.sum(spectrum[1:]/k[1:]) / numpy.sum(spectrum[1:])
+            self.outfile.write("{} {}\n".format(time, l_int))
+            self.outfile.flush()
+
+
+class Integral_Length_Cook(Diagnostic):
+    r"""A diagnostic class for concentration spectra in 2D
+    """
+    def __init__(self, scale=1, **kwargs):
+        super().__init__(**kwargs)
+        self.scale = scale
+
+    def integrate_shell(self, u, dk, grid):
+        nbins = int(grid.kmax2D/dk)+1
+        spectrum = numpy.zeros([nbins])
+        midplane = grid.box_size[2]/2
+        if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+            for k, v in numpy.nditer([grid.kmag_2D, u]):
+                spectrum[int(k/dk)] += v
+        k = numpy.arange(nbins)*dk
+
+        spectrum = grid.comm.reduce(spectrum)
+        if grid.comm.rank == 0:
+            spectrum *= 2*numpy.pi*k/numpy.prod(grid.dk[:2])*dk*self.scale
+        return k, spectrum
+        
+    def diagnostic(self, time, equations, uhat):
+        """Write the spectrum to a file
+
+        The integral cannot be calculated as a simple Riemann sum,
+        because the binning is not smooth enough.  Instead, this routine
+        caclulates the shell average, and then multiplies by the shell
+        surface area.
+        """
+        u = uhat.to_physical()
+        u_ave = numpy.mean(u, axis=(1,2))
+        #u = u-u_ave[:,None, None, :]
+        uhat2d = u.to_spectral_2Dxy()
+        midplane = uhat.grid.box_size[2]/2
+        if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
+            mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
+            uhat2d = uhat2d[:2,:,:, mid_idx]
+        else:
+            uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
+        k, spectrum = self.integrate_shell(
+            #0.5 *  (uhat2d*uhat2d.conjugate()).real, 
+            0.5 *  numpy.sum((uhat2d*uhat2d.conjugate()).real, axis=0), 
+            numpy.prod(uhat.grid.dk[:2])**(1/2), 
+            uhat.grid)
+        
+        if uhat.grid.comm.rank == 0:
+            l_int = numpy.sum(spectrum[1:]/k[1:]) / numpy.sum(spectrum[1:])
+            print(l_int)
+            self.outfile.write("{} {}\n".format(time, l_int))
+            self.outfile.flush()
+
+
+class Integral_Length_Autocorrelate(Diagnostic):
+    def correlate(self, u_fluc, axis, dx):
+        from scipy.signal import correlate
+        from scipy.integrate import trapezoid
+
+        if axis == 0:
+            nx, ny = u_fluc.shape
+        elif axis == 1:
+            ny, nx = u_fluc.shape
+        else:
+            print("Invalid axis. Exiting now, you're welcome")
+            exit()
+        R_sum = numpy.zeros(nx)
+        for j in range(ny):
+            if axis == 0:
+                uj = u_fluc[:,j]
+            else:
+                uj = u_fluc[j,:]
+            
+            corr = correlate(uj, uj, mode = 'full')
+            corr = corr[nx-1:]
+            corr /= corr[0]
+
+            R_sum += corr
+        R = R_sum / ny
+
+        r = numpy.arange(nx) * dx
+
+        zero_idx = numpy.where(R <= 0)[0]
+
+        if len(zero_idx) > 0:
+            i_end = zero_idx[0]
+        else:
+            i_end = nx
+        
+        L = trapezoid(R[:i_end], r[:i_end])
+        return L
+
+
+    def diagnostic(self, time, equations, uhat):
+        u = uhat.to_physical()
+        midplane_loc = u.shape[3]//2
+        midplane = u[:,:,:,u.shape[3]//2]
+        u_vel = midplane[0]
+        u_fluc = u_vel - numpy.mean(u_vel)
+        v_vel = midplane[1]
+        v_fluc = v_vel - numpy.mean(v_vel)
+
+        u_long = self.correlate(u_fluc, 0, uhat.grid.dx[0])
+        u_trans = self.correlate(u_fluc, 1, uhat.grid.dx[0])
+        v_long = self.correlate(v_fluc, 0, uhat.grid.dx[1])
+        v_trans = self.correlate(v_fluc, 1, uhat.grid.dx[1])
+
+        print(f"Time: {time}, U longitudinal: {u_long}, U transveral: {u_trans}, V longitudinal: {v_long}, V transveral: {v_trans}")
+
+
+class Integral_Length_SKE(Diagnostic):
+    r"""A diagnostic class for concentration spectra in 2D
+    """
+    def __init__(self, scale=1, **kwargs):
+        super().__init__(**kwargs)
+        self.scale = scale
+        
+
+    def integrate_shell(self, u, dk, grid):
+        nbins = int(grid.kmax2D/dk)+1
+        spectrum = numpy.zeros([nbins])
+        ispectrum = numpy.zeros([nbins], dtype=int)
+        midplane = grid.box_size[2]/2
+        if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+            for k, v in numpy.nditer([grid.kmag_2D, u]):
+                spectrum[int(k/dk)] += v
+                ispectrum[int(k/dk)] += 1
+        k = numpy.arange(nbins)*dk
+
+        spectrum = grid.comm.reduce(spectrum)
+        #print(k[1:k.shape[0]])
+        #print(spectrum[1:spectrum.shape[0]])
+        k = k[1:k.shape[0]]
+        spectrum = spectrum[1:spectrum.shape[0]]
+        ispectrum = grid.comm.reduce(ispectrum)
+        if grid.comm.rank == 0:
+            #spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+            #spectrum /= ispectrum[1:ispectrum.shape[0]]
+            l_int = 3*numpy.pi / 4 * numpy.sum(spectrum/k*dk)/numpy.sum(spectrum*dk)
+            print(l_int)
+            #print(numpy.sum(spectrum/k*dk))
+            #print(numpy.sum(spectrum*dk))
+            print("-_-_-_-_-_-_-_-_-_-_")
+
+        return l_int #k, spectrum
+        
+    def diagnostic(self, time, equations, uhat):
+        """Write the spectrum to a file
+
+        The integral cannot be calculated as a simple Riemann sum,
+        because the binning is not smooth enough.  Instead, this routine
+        caclulates the shell average, and then multiplies by the shell
+        surface area.
+        """
+        u = uhat.to_physical()
+        uhat2d = u.to_spectral_2Dxy()
+        midplane = uhat.grid.box_size[2]/2
+        if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
+            mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
+            uhat2d = uhat2d[:2,:,:, mid_idx]
+        else:
+            uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
+        l_int = self.integrate_shell(
+            0.5 *  numpy.sum((uhat2d*uhat2d.conjugate()).real, axis=0), 
+            numpy.prod(uhat.grid.dk[:2])**(1/2), 
+            uhat.grid)
+        
+        if uhat.grid.comm.rank == 0:
+            #l_int = numpy.sum(spectrum[1:]/k[1:]) / numpy.sum(spectrum[1:])
+            self.outfile.write("{} {}\n".format(time, l_int))
+            self.outfile.flush()
+
 
 
 class FieldDump(Diagnostic):
@@ -747,6 +1012,7 @@ class VTKDump(Diagnostic):
     def __init__(self, names, filename="./rank{rank}_phys{time:04g}", **kwargs):
         # We defer evtk import so it does not become a dependency
         # unless we are actually using the VTKDump diagnostic.
+        # If including a file path, use the absolute path.
         import evtk
         self.gridToVTK = evtk.hl.gridToVTK
         self.writeParallelVTKGrid = evtk.hl.writeParallelVTKGrid
