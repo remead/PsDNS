@@ -612,13 +612,12 @@ class Spectra(Diagnostic):
             self.outfile.flush()
 
 
-class Spectra2D_par(Diagnostic):
+class Spectra2D_Parallel_concentration(Diagnostic):
     r"""A diagnostic class for concentration spectra in 2D
     """
     def __init__(self, scale=1, **kwargs):
         super().__init__(**kwargs)
         self.scale = scale
-        
 
     def integrate_shell(self, u, dk, grid):
         nbins = int(grid.kmax2D/dk)+1
@@ -631,15 +630,66 @@ class Spectra2D_par(Diagnostic):
                 ispectrum[int(k/dk)] += 1
         k = numpy.arange(nbins)*dk
 
-        spectrum = grid.comm.reduce(spectrum)
-        ispectrum = grid.comm.reduce(ispectrum)
+        spectrum = grid.comm.reduce(spectrum, root=0)
+        ispectrum = grid.comm.reduce(ispectrum, root=0)
         if grid.comm.rank == 0:
             spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
-            print(sum(spectrum*spectrum))
-            print(spectrum)
-            exit()
         return k, spectrum
-        
+
+    def diagnostic(self, time, equations, uhat):
+        """Write the spectrum to a file
+
+        The integral cannot be calculated as a simple Riemann sum,
+        because the binning is not smooth enough.  Instead, this routine
+        caclulates the shell average, and then multiplies by the shell
+        surface area.
+        """
+        u = uhat.to_physical()
+        uhat2d = u.to_spectral_2Dxy()
+        midplane = uhat.grid.box_size[2]/2
+        if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
+            mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
+            uhat2d = uhat2d[3,:,:, mid_idx]
+        else:
+            uhat2d = numpy.zeros(uhat2d[3,:,:, 0].shape)
+        k, spectrum = self.integrate_shell(
+            0.5 *  (uhat2d*uhat2d.conjugate()).real,
+            numpy.prod(uhat.grid.dk[:2])**(1/2),
+            uhat.grid)
+        #if uhat.grid.comm.rank == 0:
+            #print(spectrum)
+        if uhat.grid.comm.rank == 0:
+            for i, s in zip(k, spectrum):
+                self.outfile.write("{} {}\n".format(i, s))
+            self.outfile.write("\n\n")
+            self.outfile.flush()
+
+
+class Spectra2D_Parallel_velocity(Diagnostic):
+    r"""A diagnostic class for concentration spectra in 2D
+    """
+    def __init__(self, scale=1, **kwargs):
+        super().__init__(**kwargs)
+        self.scale = scale
+
+
+    def integrate_shell(self, u, dk, grid):
+        nbins = int(grid.kmax2D/dk)+1
+        spectrum = numpy.zeros([nbins])
+        ispectrum = numpy.zeros([nbins], dtype=int)
+        midplane = grid.box_size[2]/2
+        if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+            for k, v in numpy.nditer([grid.kmag_2D, u]):
+                spectrum[int(k/dk)] += v
+                ispectrum[int(k/dk)] += 1
+        k = numpy.arange(nbins)*dk
+
+        spectrum = grid.comm.reduce(spectrum, root=0)
+        ispectrum = grid.comm.reduce(ispectrum, root=0)
+        if grid.comm.rank == 0:
+            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+        return k, spectrum
+
     def diagnostic(self, time, equations, uhat):
         """Write the spectrum to a file
 
@@ -654,14 +704,14 @@ class Spectra2D_par(Diagnostic):
         # Get data in the midplane
         if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
             mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
-            uhat2d = uhat2d[3,:,:, mid_idx]
+            uhat2d = uhat2d[:2,:,:, mid_idx]
         else:
-            uhat2d = numpy.zeros(uhat2d[3,:,:, 0].shape)
+            uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
         k, spectrum = self.integrate_shell(
-            0.5 *  (uhat2d*uhat2d.conjugate()).real, 
-            numpy.prod(uhat.grid.dk[:2])**(1/2), 
+            0.5 *  (uhat2d*uhat2d.conjugate()).real,
+            numpy.prod(uhat.grid.dk[:2])**(1/2),
             uhat.grid)
-        
+
         if uhat.grid.comm.rank == 0:
             for i, s in zip(k, spectrum):
                 self.outfile.write("{} {}\n".format(i, s))
@@ -733,8 +783,8 @@ class Integral_Length(Diagnostic):
                 ispectrum[int(k/dk)] += 1
         k = numpy.arange(nbins)*dk
 
-        spectrum = grid.comm.reduce(spectrum)
-        ispectrum = grid.comm.reduce(ispectrum)
+        spectrum = grid.comm.reduce(spectrum, root=0)
+        ispectrum = grid.comm.reduce(ispectrum, root=0)
         if grid.comm.rank == 0:
             spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
         return k, spectrum
@@ -826,15 +876,25 @@ class Integral_Length_Cook(Diagnostic):
     def integrate_shell(self, u, dk, grid):
         nbins = int(grid.kmax2D/dk)+1
         spectrum = numpy.zeros([nbins])
+        ispectrum = numpy.zeros([nbins], dtype=int)
         midplane = grid.box_size[2]/2
         if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
             for k, v in numpy.nditer([grid.kmag_2D, u]):
                 spectrum[int(k/dk)] += v
+                ispectrum[int(k/dk)] += 1
         k = numpy.arange(nbins)*dk
 
-        spectrum = grid.comm.reduce(spectrum)
+        spectrum = grid.comm.reduce(spectrum, root=0)
+        ispectrum = grid.comm.reduce(ispectrum, root=0)
         if grid.comm.rank == 0:
-            spectrum *= 2*numpy.pi*k/numpy.prod(grid.dk[:2])*dk*self.scale
+            print(f"spectrum {spectrum}")
+            print(f"ispectrum {ispectrum}")
+            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+
+            print(f"after spectrum {spectrum}")
+            print(f"after spectrum divided by k {spectrum/k}")
+            print(f"sum of after spectrum divided by k {numpy.sum(spectrum[1:]/k[1:])}")
+            print(f"sum of after spectrum {numpy.sum(spectrum)}")
         return k, spectrum
         
     def diagnostic(self, time, equations, uhat):
@@ -856,14 +916,14 @@ class Integral_Length_Cook(Diagnostic):
         else:
             uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
         k, spectrum = self.integrate_shell(
-            #0.5 *  (uhat2d*uhat2d.conjugate()).real, 
-            0.5 *  numpy.sum((uhat2d*uhat2d.conjugate()).real, axis=0), 
+            0.5 * (uhat2d*uhat2d.conjugate()).real, #numpy.sum((uhat2d*uhat2d.conjugate()).real, axis=0), 
             numpy.prod(uhat.grid.dk[:2])**(1/2), 
             uhat.grid)
         
         if uhat.grid.comm.rank == 0:
+            #print(f"spectrum[0]:{spectrum[0]}")
             l_int = numpy.sum(spectrum[1:]/k[1:]) / numpy.sum(spectrum[1:])
-            print(l_int)
+            print(f"Time {time} l_int {l_int}\n\n")
             self.outfile.write("{} {}\n".format(time, l_int))
             self.outfile.flush()
 
@@ -986,6 +1046,217 @@ class Integral_Length_SKE(Diagnostic):
             self.outfile.write("{} {}\n".format(time, l_int))
             self.outfile.flush()
 
+
+class PlaneSpectra(Diagnostic):
+    r"""A diagnostic class for 2D velocity spectra averaged across z-planes
+    
+    Averages the 2D energy spectrum over the midplane (z=0) and 5 planes
+    above and below to capture the full vertical extent of the structures.
+    """
+    
+    def integrate_shell_2d(self, energy, dk, grid):
+        """Integrate energy over annular shells in 2D"""
+        nbins = int(grid.kmax2D/dk) + 1
+        spectrum = numpy.zeros([nbins])
+        count = numpy.zeros([nbins], dtype=int)
+        
+        for kappa, e in numpy.nditer([grid.kmag_2D, energy], flags=['refs_ok']):
+            if kappa > 0:
+                idx = int(kappa/dk)
+                if idx < nbins:
+                    spectrum[idx] += e
+                    count[idx] += 1
+        
+        k = numpy.arange(nbins) * dk
+        spectrum = grid.comm.reduce(spectrum)
+        count = grid.comm.reduce(count)
+        
+        if grid.comm.rank == 0:
+            denom = count * dk**2
+            denom[denom == 0] = 1
+            spectrum = 2 * numpy.pi * k * spectrum / denom
+        
+        return k, spectrum
+    
+    def diagnostic(self, time, equations, uhat):
+        """Write the averaged 2D spectrum to a file"""
+        # Number of planes to sample above/below midplane
+        n_planes_each_side = 2#5
+        
+        # Transform to 2D spectral
+        u = uhat[:2].to_physical()
+        uhat_2d = u.to_spectral_2Dxy()  # [2, kx, ky, nz_local]
+        
+        # Midplane index
+        z_mid = uhat.grid.pdims[2] // 2
+        
+        # Accumulate energy across all sampled planes
+        z_slice = uhat.grid._local_z_slice
+        energy_sum = None
+        n_contributing_planes = 0
+        
+        # Sample planes from z_mid-5 to z_mid+5
+        for offset in range(-n_planes_each_side, n_planes_each_side + 1):
+            z_global = z_mid + offset
+            
+            # Check if this plane is in local slice
+            if z_global >= z_slice.start and z_global < z_slice.stop:
+                z_local = z_global - z_slice.start
+                u_z = uhat_2d[..., :, :, z_local]
+                energy_z = ((u_z * u_z.conjugate()).real).sum(axis=0)
+                
+                if energy_sum is None:
+                    energy_sum = energy_z
+                else:
+                    energy_sum += energy_z
+                n_contributing_planes += 1
+        
+        # Reduce across MPI ranks
+        if n_contributing_planes > 0:
+            energy_2d = energy_sum / n_contributing_planes
+        else:
+            energy_2d = numpy.zeros(uhat_2d.shape[1:-1])
+        
+        # All ranks participate in reduction
+        total_planes = uhat.grid.comm.reduce(n_contributing_planes, MPI.SUM)
+        energy_2d = uhat.grid.comm.reduce(energy_2d, MPI.SUM)
+        
+        if uhat.grid.comm.rank == 0:
+            # Average across all ranks' contributions
+            energy_2d /= total_planes if total_planes > 0 else 1
+            
+            # Compute spectrum
+            dk = numpy.sqrt(uhat.grid.dk[0] * uhat.grid.dk[1])
+            kappa, spectrum = self.integrate_shell_2d(energy_2d, dk, uhat.grid)
+            
+            # Calculate L
+            if len(kappa) > 1 and numpy.any(spectrum[1:] > 0):
+                kappa_pos = kappa[1:]
+                spec_pos = spectrum[1:]
+                numerator = numpy.trapz(spec_pos / kappa_pos, kappa_pos)
+                denominator = numpy.trapz(spec_pos, kappa_pos)
+                L = numerator / denominator if denominator > 0 else 0.0
+            else:
+                L = 0.0
+            
+            # Write output
+            self.outfile.write(f"# t = {time}\n")
+            self.outfile.write(f"# L = {L}\n")
+            self.outfile.write(f"# Averaged over {total_planes} z-planes around midplane\n")
+            for k, s in zip(kappa, spectrum):
+                self.outfile.write(f"{k} {s}\n")
+            self.outfile.write("\n\n")
+            self.outfile.flush()
+
+
+'''class PlaneSpectra(Diagnostic):
+    r"""A diagnostic class for 2D velocity spectra on the midplane (z=0)
+    This diagnostic computes the two-dimensional energy spectrum function
+    on the z=0 midplane using the existing distributed 2D FFT infrastructure.
+    The full domain is transformed and then z=0 is extracted locally from
+    each rank's portion.
+    
+    The spectrum is defined as:
+    .. math::
+        E(\kappa)
+        = \hat{u}_i(\boldsymbol{\kappa}) \hat{u}_i^*(\boldsymbol{\kappa})
+    where :math:`i \in \{u, v\}` sums over the in-plane velocity components
+    and :math:`\boldsymbol{\kappa} = (k_x, k_y)` is the 2D wavevector.
+    The spectrum is azimuthally averaged to produce a 1D spectrum as a
+    function of :math:`\kappa = |\boldsymbol{\kappa}|`.
+    The integral length scale is computed according to:
+    .. math::
+        L = \frac{\int_0^\infty \kappa^{-1} E(\kappa) \, d\kappa}{
+                \int_0^\infty E(\kappa) \, d\kappa}
+    """
+    
+    def integrate_shell_2d(self, energy, dk, grid):
+        """Integrate energy over annular shells in 2D wavevector space
+        
+        Bins energy by 2D wavenumber magnitude and applies appropriate
+        azimuthal averaging. Shell area element is 2*pi*kappa*dkappa.
+        """
+        nbins = int(grid.kmax2D/dk) + 1
+        spectrum = numpy.zeros([nbins])
+        count = numpy.zeros([nbins], dtype=int)
+        
+        # Iterate over 2D wavenumber magnitudes and energy
+        for kappa, e in numpy.nditer([grid.kmag_2D, energy], flags=['refs_ok']):
+            if kappa > 0:  # Exclude kappa=0
+                idx = int(kappa/dk)
+                if idx < nbins:
+                    spectrum[idx] += e
+                    count[idx] += 1
+        
+        k = numpy.arange(nbins) * dk
+        
+        # Reduce across MPI ranks
+        spectrum = grid.comm.reduce(spectrum)
+        count = grid.comm.reduce(count)
+        
+        if grid.comm.rank == 0:
+            # Normalize: multiply by 2*pi*kappa / (count * dk^2)
+            # This gives the energy density per unit wavenumber
+            denom = count * dk**2
+            denom[denom == 0] = 1  # Avoid division by zero
+            spectrum = 2 * numpy.pi * k * spectrum / denom
+        
+        return k, spectrum
+    
+    def diagnostic(self, time, equations, uhat):
+        """Write the 2D midplane spectrum to a file"""
+        # Get u and v velocities in physical space
+        u = uhat[:2].to_physical()
+        
+        # Transform full domain using 2D FFT (x-y only, z distributed)
+        # Result has shape [2, kx, ky, nz_local] where nz is distributed
+        uhat_2d = u.to_spectral_2Dxy()
+        
+        # Check if this rank has z=0 in its local slice
+        z0_global = uhat.grid.pdims[2] // 2  # Midplane index
+        z_slice = uhat.grid._local_z_slice
+        has_z0 = (z0_global >= z_slice.start and z0_global < z_slice.stop)
+        
+        if has_z0:
+            # Extract local z-index of z=0 plane
+            z0_local = z0_global - z_slice.start
+            # Get 2D energy at z=0: |u_hat|^2 + |v_hat|^2
+            # Shape: [2, kx, ky] -> sum over components -> [kx, ky]
+            u_z0 = uhat_2d[..., :, :, z0_local]
+            energy_2d = ((u_z0 * u_z0.conjugate()).real).sum(axis=0)
+        else:
+            # This rank doesn't have z=0, contribute zeros
+            k2d_shape = uhat_2d.shape[1:-1]  # [kx, ky]
+            energy_2d = numpy.zeros(k2d_shape)
+        
+        # 2D wavenumber spacing in x-y plane
+        dk = numpy.sqrt(uhat.grid.dk[0] * uhat.grid.dk[1])
+        
+        # Perform azimuthal shell integration
+        kappa, spectrum = self.integrate_shell_2d(energy_2d, dk, uhat.grid)
+        
+        # Calculate integral length scale and write output
+        if uhat.grid.comm.rank == 0:
+            # Exclude kappa=0 (first bin)
+            if len(kappa) > 1 and numpy.any(spectrum[1:] > 0):
+                kappa_pos = kappa[1:]
+                spec_pos = spectrum[1:]
+                
+                # Numerical integration using trapezoidal rule
+                numerator = numpy.trapz(spec_pos / kappa_pos, kappa_pos)
+                denominator = numpy.trapz(spec_pos, kappa_pos)
+                
+                L = numerator / denominator if denominator > 0 else 0.0
+            else:
+                L = 0.0
+            
+            # Write output
+            self.outfile.write(f"# t = {time}\n")
+            self.outfile.write(f"# L = {L}\n")
+            for k, s in zip(kappa, spectrum):
+                self.outfile.write(f"{k} {s}\n")
+            self.outfile.write("\n\n")
+            self.outfile.flush()'''
 
 
 class FieldDump(Diagnostic):
