@@ -633,7 +633,7 @@ class Spectra2D_Parallel_concentration(Diagnostic):
         spectrum = grid.comm.reduce(spectrum, root=0)
         ispectrum = grid.comm.reduce(ispectrum, root=0)
         if grid.comm.rank == 0:
-            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])
         return k, spectrum
 
     def diagnostic(self, time, equations, uhat):
@@ -687,7 +687,7 @@ class Spectra2D_Parallel_velocity(Diagnostic):
         spectrum = grid.comm.reduce(spectrum, root=0)
         ispectrum = grid.comm.reduce(ispectrum, root=0)
         if grid.comm.rank == 0:
-            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])
         return k, spectrum
 
     def diagnostic(self, time, equations, uhat):
@@ -776,7 +776,8 @@ class Integral_Length_Cook(Diagnostic):
         spectrum = numpy.zeros([nbins])
         ispectrum = numpy.zeros([nbins], dtype=int)
         midplane = grid.box_size[2]/2
-        if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+        #if midplane in grid.x[2,0,0,grid._local_z_slice.start:grid._local_z_slice.stop]:
+        if midplane >=grid.x[2,0,0,grid._local_z_slice.start] or midplane <=grid.x[2,0,0,grid._local_z_slice.stop]:
             for k, v in numpy.nditer([grid.kmag_2D, u]):
                 spectrum[int(k/dk)] += v
                 ispectrum[int(k/dk)] += 1
@@ -785,14 +786,14 @@ class Integral_Length_Cook(Diagnostic):
         spectrum = grid.comm.reduce(spectrum, root=0)
         ispectrum = grid.comm.reduce(ispectrum, root=0)
         if grid.comm.rank == 0:
-            print(f"spectrum {spectrum}")
-            print(f"ispectrum {ispectrum}")
-            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])*dk*self.scale
+            #print(f"spectrum {spectrum}")
+            #print(f"ispectrum {ispectrum}")
+            spectrum *= 2*numpy.pi*k/(ispectrum/2)/numpy.prod(grid.dk[:2])
 
-            print(f"after spectrum {spectrum}")
-            print(f"after spectrum divided by k {spectrum/k}")
-            print(f"sum of after spectrum divided by k {numpy.sum(spectrum[1:]/k[1:])}")
-            print(f"sum of after spectrum {numpy.sum(spectrum)}")
+            #print(f"after spectrum {spectrum}")
+            #print(f"after spectrum divided by k {spectrum/k}")
+            #print(f"sum of after spectrum divided by k {numpy.sum(spectrum[1:]/k[1:])}")
+            #print(f"sum of after spectrum {numpy.sum(spectrum)}")
         return k, spectrum
         
     def diagnostic(self, time, equations, uhat):
@@ -808,8 +809,11 @@ class Integral_Length_Cook(Diagnostic):
         #u = u-u_ave[:,None, None, :]
         uhat2d = u.to_spectral_2Dxy()
         midplane = uhat.grid.box_size[2]/2
-        if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
+        """if midplane in uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop]:
             mid_idx = numpy.where(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] == midplane)[0][0]
+            uhat2d = uhat2d[:2,:,:, mid_idx]"""
+        if midplane >=uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start] or midplane <=uhat.grid.x[2,0,0,uhat.grid._local_z_slice.stop]:
+            mid_idx = numpy.where(numpy.abs(uhat.grid.x[2,0,0,uhat.grid._local_z_slice.start:uhat.grid._local_z_slice.stop] - midplane)<uhat.grid.dx[2]/10)[0][0]
             uhat2d = uhat2d[:2,:,:, mid_idx]
         else:
             uhat2d = numpy.zeros(uhat2d[:2,:,:, 0].shape)
